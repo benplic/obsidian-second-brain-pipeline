@@ -1,0 +1,55 @@
+# ---- Secrets and local config (never commit) ----
+.env
+.env.*
+!.env.example
+config.yaml
+config.*.yaml
+!config.example.yaml
+
+# ---- Pipeline queues and personal data ----
+data/
+pending_links.txt
+clean_metadata.json
+organized_tiktoks.csv
+saved_posts.json
+*saved_posts*.json
+*tiktok_clean_metadata*.json
+url_ledger.jsonl
+*.ledger.jsonl
+# Meta/TikTok export archives
+*.zip
+
+# ---- Browser cookies (yt-dlp --cookies) ----
+cookies.txt
+*cookies*.txt
+*.cookies
+cookies/
+
+# ---- Obsidian vault content (only examples/sample-vault is public) ----
+# Root-anchored so examples/sample-vault/The Brain stays tracked.
+/The Brain/
+/vault/
+.obsidian/
+.trash/
+# URL ledger folder inside a vault (including the sample vault)
+.second-brain/
+# Atomic-write temp files (".<name>.<hex>.tmp")
+.*.tmp
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---- OS / editors ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

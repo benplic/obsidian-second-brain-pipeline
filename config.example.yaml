@@ -1,0 +1,51 @@
+# Copy to config.yaml (gitignored) and edit.
+# Relative paths are resolved from the folder containing this file.
+# On Windows use forward slashes: "D:/Obsidian/The Brain".
+
+# Root of your Obsidian vault (the folder that contains "3 - Resources").
+vault_path: "./examples/sample-vault/The Brain"
+resources_subdir: "3 - Resources"
+
+# Where queue files live (clean_metadata.json, organized_tiktoks.csv).
+data_dir: "./data"
+
+# The iOS Shortcut appends shared URLs here. Point it at your synced drive, e.g.
+#   "G:/My Drive/Inbox/pending_links.txt"   or   "~/iCloudDrive/Inbox/pending_links.txt"
+pending_links_path: "./data/pending_links.txt"
+
+# Meta "Your saved items" export (personal data, keep it out of git).
+instagram_export_path: "./data/saved_posts.json"
+
+# Persistent record of every URL that became a card or was tossed.
+# Default (leave null): <vault_path>/.second-brain/url_ledger.jsonl, a hidden
+# folder Obsidian does not index, so it syncs and backs up with the vault.
+# Losing it only means deleted cards could be re-ingested.
+ledger_path: null
+
+extract:
+  workers: 10
+  timeout_seconds: 20
+  checkpoint_every: 10
+  # Browser to read cookies from if Instagram blocks anonymous pulls (e.g. "chrome", "edge").
+  cookies_from_browser: null
+
+gemini:
+  model: "gemini-3.6-flash"
+  batch_size: 100              # free tier: ~20 requests/day, so batch hard
+  max_retries: 5
+  backoff_base_seconds: 8      # delay = base * 2^attempt + jitter
+  jitter_seconds: [1, 3]
+  pause_between_batches_seconds: 10
+
+model_a:
+  inbox_path: null             # default: <vault>/3 - Resources/Inbox/pending_links.txt
+  metadata_snapshot_path: null # optional old clean_metadata.json for richer enrich prompts
+  batch_size: 10
+  backoff_base_seconds: 15
+  confidence_threshold: 0.65
+
+# Optional: replace the default category -> folder map (order = prompt order).
+# taxonomy:
+#   "Saved Music": "Music"
+#   "Tech & Coding": "Tech & Coding"
+#   "Miscellaneous": "Inbox"

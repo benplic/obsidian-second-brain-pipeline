@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian-second-brain-pipeline"
+version = "0.1.0"
+description = "Turn saved TikTok/Instagram videos into categorized Obsidian cards with Gemini. Not affiliated with Obsidian."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Scott Plichta" }]
+dependencies = [
+    "google-genai>=1.0",
+    "pydantic>=2.5",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "yt-dlp>=2024.1.0",
+]
+
+[project.optional-dependencies]
+model-a = ["opencv-python>=4.8", "pillow>=10.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+second-brain = "second_brain.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
