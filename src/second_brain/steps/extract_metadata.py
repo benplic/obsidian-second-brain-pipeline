@@ -2,8 +2,9 @@
 
 Zero waste: URLs already known (vault, ledger, in flight) are dropped before
 any extraction. On exit, pending_links.txt keeps only failed/invalid links (for
-review) plus anything the phone appended while we were running, and is deleted
-when nothing is left.
+review) plus anything the phone appended while we were running. When the queue
+is empty the file is cleared in place (not deleted) so a Google Drive / iCloud
+Shortcut target keeps working across runs.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..config import Settings
-from ..io_utils import atomic_write_json, atomic_write_text, read_json_list, remove_if_exists
+from ..io_utils import atomic_write_json, atomic_write_text, read_json_list
 from ..ledger import UrlLedger
 from ..urls import is_valid_http_url, normalize_url
 from .registry import known_urls
@@ -108,8 +109,11 @@ def _rewrite_pending(path: Path, initial_lines: set[str], keep: list[str]) -> No
     final = list(dict.fromkeys(keep + appended))
     if final:
         atomic_write_text(path, "".join(f"{line}\n" for line in final))
-    elif remove_if_exists(path):
-        logger.info("CLEANUP: All links processed. '%s' deleted.", path.name)
+    elif path.exists():
+        # Erase contents but keep the file. Deleting it breaks cloud-drive
+        # sync and forces the iOS Shortcut to recreate / re-link the path.
+        atomic_write_text(path, "")
+        logger.info("CLEANUP: All links processed. '%s' cleared (file kept for sync).", path.name)
 
 
 def run_extract(settings: Settings, fetcher: Fetcher | None = None) -> ExtractResult:

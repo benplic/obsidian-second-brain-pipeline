@@ -38,7 +38,7 @@ flowchart LR
 | No duplicate work | Before extraction, a URL is skipped if it is in any card's frontmatter (the vault is the registry), in the ledger, or already waiting in a queue file. URLs are normalized first: tracking parameters such as `igsh`, `utm_*`, `is_from_webapp`, and `sender_device` are removed, so the same video shared twice counts once. |
 | Deleted and tossed cards stay gone | `<vault>/.second-brain/url_ledger.jsonl` records every URL that became a card. Deleting a card does not make its URL "new" again. |
 | Crash safety | Queues are "pop on success": each item or batch is removed only after its output is written and `fsync`ed. Every rewrite is atomic (temp file, fsync, rename). A crash at any point can repeat at most the in-flight item, and dedupe then skips it. |
-| Zero waste | A queue file is deleted as soon as it is empty. |
+| Zero waste | Intermediate queues (`clean_metadata.json`, `organized_tiktoks.csv`) are deleted when empty. `pending_links.txt` is cleared in place instead, so Google Drive / iCloud Shortcut targets stay linked. |
 
 ## Repository layout
 

@@ -43,7 +43,9 @@ def test_skips_vault_ledger_and_inflight_urls_before_fetching(settings):
     assert result.skipped_known == 3 and result.extracted == 1
     queue = json.loads(settings.clean_metadata_path.read_text(encoding="utf-8"))
     assert [q["url"] for q in queue] == ["https://t.co/v/queued", "https://t.co/v/new"]
-    assert not settings.pending_links_path.exists()
+    # File stays so Google Drive / Shortcut keep a stable path; contents erased.
+    assert settings.pending_links_path.exists()
+    assert settings.pending_links_path.read_text(encoding="utf-8") == ""
 
 
 def test_failed_and_invalid_lines_stay_for_review(settings):
@@ -102,6 +104,15 @@ def test_missing_vault_stops_before_creating_ledger(settings):
 
 def test_missing_pending_file_is_a_noop(settings):
     assert run_extract(settings, fetcher=_fake_fetcher()[0]).extracted == 0
+
+
+def test_empty_pending_file_is_cleared_not_deleted(settings):
+    _pending(settings, [])
+    # _pending writes a trailing newline; treat that as an empty queue.
+    settings.pending_links_path.write_text("", encoding="utf-8")
+    run_extract(settings, fetcher=_fake_fetcher()[0])
+    assert settings.pending_links_path.exists()
+    assert settings.pending_links_path.read_text(encoding="utf-8") == ""
 
 
 def test_ytdlp_command_ends_options_before_url():
