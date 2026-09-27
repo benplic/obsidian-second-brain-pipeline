@@ -9,7 +9,7 @@ description = "Turn saved TikTok/Instagram videos into categorized Obsidian card
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Scott Plichta" }]
+authors = [{ name = "Benjamin Plichta" }]
 dependencies = [
     "google-genai>=1.0",
     "pydantic>=2.5",
