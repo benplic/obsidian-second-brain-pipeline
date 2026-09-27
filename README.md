@@ -179,4 +179,4 @@ The tests cover frontmatter dedupe, queue pop-on-success and crash recovery, the
 
 ## License
 
-[MIT](LICENSE) © 2026 Scott Plichta. "Obsidian" is a trademark of its owner. It is used here only to describe compatibility.
+[MIT](LICENSE) © 2026 Benjamin Plichta. "Obsidian" is a trademark of its owner. It is used here only to describe compatibility.
