@@ -14,7 +14,6 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from ..config import CrusherSettings
-from ..steps.extract_metadata import build_ytdlp_command
 from ..urls import normalize_url
 from .probe import ProbeResult, count_scene_changes, probe_file
 
@@ -60,12 +59,44 @@ def _run_ytdlp_json(url: str, settings: CrusherSettings) -> dict | None:
     except (subprocess.SubprocessError, OSError) as exc:
         logger.warning("yt-dlp info failed for %s: %s", url, exc)
         return None
-    if result.returncode != 0 or not result.stdout.strip():
+    if not result.stdout.strip():
         return None
+    # Instagram carousels log per-slide errors then emit playlist JSON on the last line.
+    for line in reversed(result.stdout.strip().splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _resolve_webpage_url(url: str, settings: CrusherSettings) -> str:
+    """Follow redirects (TikTok t/ short links -> canonical /video/ or /photo/)."""
+    cmd = ["yt-dlp", "--skip-download", "--print", "webpage_url"]
+    if settings.cookies_from_browser:
+        cmd += ["--cookies-from-browser", settings.cookies_from_browser]
+    cmd += ["--", url]
     try:
-        return json.loads(result.stdout.strip().splitlines()[0])
-    except json.JSONDecodeError:
-        return None
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=45,
+            creationflags=_CREATION_FLAGS,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return url
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip().splitlines()[-1].strip()
+    return url
+
+
+def _minimal_info_from_url(url: str) -> dict:
+    return {"title": "", "description": "", "tags": [], "uploader": "Unknown", "url": url}
 
 
 def _vtt_to_text(vtt: str) -> str:
@@ -148,6 +179,27 @@ def _download_video(url: str, tmp: Path, settings: CrusherSettings) -> Path | No
     return None
 
 
+def _download_instagram_slides(url: str, count: int, tmp: Path, settings: CrusherSettings) -> list[Path]:
+    """Download each img_index slide when playlist entries lack direct URLs."""
+    paths: list[Path] = []
+    base = url.split("?")[0]
+    for index in range(1, min(count, 15) + 1):
+        slide_url = f"{base}?img_index={index}"
+        out = tmp / f"ig_slide_{index:02d}.%(ext)s"
+        cmd = ["yt-dlp", "--skip-download", "--write-thumbnail", "-o", str(out), "--", slide_url]
+        if settings.cookies_from_browser:
+            cmd[1:1] = ["--cookies-from-browser", settings.cookies_from_browser]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=60, check=False, creationflags=_CREATION_FLAGS)
+        except (subprocess.SubprocessError, OSError):
+            continue
+        for candidate in tmp.glob(f"ig_slide_{index:02d}*"):
+            if candidate.is_file():
+                paths.append(candidate)
+                break
+    return paths
+
+
 def _download_carousel_entries(info: dict, tmp: Path, url: str, settings: CrusherSettings) -> list[Path]:
     paths: list[Path] = []
     entries = info.get("entries") or []
@@ -169,6 +221,11 @@ def _download_carousel_entries(info: dict, tmp: Path, url: str, settings: Crushe
             logger.debug("Carousel image %d failed: %s", idx, exc)
     if paths:
         return paths
+    playlist_count = info.get("playlist_count")
+    if "instagram.com" in url and playlist_count:
+        ig_paths = _download_instagram_slides(url, int(playlist_count), tmp, settings)
+        if ig_paths:
+            return ig_paths
     # Fallback: ask yt-dlp to dump thumbnails for the playlist URL.
     cmd = ["yt-dlp", "--skip-download", "--write-thumbnail", "-o", str(tmp / "thumb"), "--", url]
     if settings.cookies_from_browser:
@@ -216,9 +273,16 @@ def _tiktok_photo_fallback(url: str, tmp: Path) -> list[Path]:
 def acquire_media(url: str, settings: CrusherSettings) -> AcquiredMedia:
     """Fetch metadata and local media files for one URL."""
     url = normalize_url(url)
+    resolved = _resolve_webpage_url(url, settings)
     info = _run_ytdlp_json(url, settings)
+    if info is None and resolved != url:
+        info = _run_ytdlp_json(resolved, settings)
     if info is None:
-        raise MediaUnavailableError("Could not fetch video metadata (deleted, private, or blocked).")
+        # TikTok /photo/ posts often fail yt-dlp JSON; still try slide scrape.
+        if "/photo/" in resolved or "tiktok.com/t/" in url:
+            info = _minimal_info_from_url(resolved)
+        else:
+            raise MediaUnavailableError("Could not fetch video metadata (deleted, private, or blocked).")
 
     title = str(info.get("title") or "")
     description = str(info.get("description") or "")
@@ -251,9 +315,12 @@ def acquire_media(url: str, settings: CrusherSettings) -> AcquiredMedia:
         result.is_carousel = True
         result.carousel_image_paths = _download_carousel_entries(info, tmp_path, url, settings)
 
-    if not result.carousel_image_paths and "/photo/" in url:
+    photo_target = resolved if "/photo/" in resolved else url
+    if not result.carousel_image_paths and ("/photo/" in photo_target or "/photo/" in resolved):
         result.is_carousel = True
-        result.carousel_image_paths = _tiktok_photo_fallback(url, tmp_path)
+        result.carousel_image_paths = _tiktok_photo_fallback(photo_target, tmp_path)
+        if not result.carousel_image_paths and resolved != photo_target:
+            result.carousel_image_paths = _tiktok_photo_fallback(resolved, tmp_path)
 
     result.subtitle_text = _download_subtitles(info, tmp_path, url, settings)
     result.video_path = _download_video(url, tmp_path, settings)
@@ -267,6 +334,16 @@ def acquire_media(url: str, settings: CrusherSettings) -> AcquiredMedia:
             result.probe.expected_slide_count = slides
 
     if not result.video_path and not result.carousel_image_paths:
+        # Degraded path: caption/description-only (e.g. Instagram carousel when
+        # slide downloads fail without browser cookies). Multimodal quality is
+        # lower; completeness may land in needs-review.
+        if (result.description or result.title).strip():
+            logger.warning(
+                "No local media for %s; continuing with metadata/caption only. "
+                "Set crusher.cookies_from_browser for Instagram carousels.",
+                url,
+            )
+            return result
         raise MediaUnavailableError("No downloadable video or images for this URL.")
 
     return result

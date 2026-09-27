@@ -7,28 +7,28 @@
 cases:
   - id: travel_slideshow_tiktok_photo
     description: TikTok /photo/ post with a different destination on each slide
-    url: "https://www.tiktok.com/@example/video/0000000000000000001"
+    url: "https://www.tiktok.com/t/ZP8TvmKGk/"
     expected_category: Travel
     min_items: 2
     item_kinds: [destination]
 
   - id: travel_instagram_carousel
     description: Instagram carousel (_type playlist) with multiple travel stops
-    url: "https://www.instagram.com/p/EXAMPLE000000000000000000000000000/"
+    url: "https://www.instagram.com/p/DV9asoNka6K/?img_index=8&stkn=MWtxZzljZTl2d2kweA=="
     expected_category: Travel
     min_items: 2
     item_kinds: [destination]
 
   - id: albums_spoken_no_captions
-    description: Creator lists favorite albums in speech; platform captions empty or wrong
-    url: "https://www.tiktok.com/@example/video/0000000000000000002"
+    description: Creator lists favorite songs/albums in speech (Top 10 list)
+    url: "https://www.tiktok.com/t/ZP8TvQ4ww/"
     expected_category: Saved Music
     min_items: 3
-    item_kinds: [album]
+    item_kinds: [song]
 
   - id: songs_on_screen_only
     description: Song titles shown as on-screen text over music; little or no speech
-    url: "https://www.tiktok.com/@example/video/0000000000000000003"
+    url: "https://www.tiktok.com/t/ZP8Tv7oVv/"
     expected_category: Saved Music
     min_items: 3
     item_kinds: [song]

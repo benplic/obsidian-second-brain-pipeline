@@ -86,11 +86,20 @@ def _build_prompt(ctx: AnalyzeContext, settings: CrusherSettings, taxonomy_keys:
     )
 
 
+def _resolve_media_resolution(settings: CrusherSettings):
+    from google.genai import types
+
+    raw = settings.media_resolution
+    if isinstance(raw, str) and hasattr(types.MediaResolution, raw):
+        return getattr(types.MediaResolution, raw)
+    return types.MediaResolution.MEDIA_RESOLUTION_LOW
+
+
 def _media_parts(client, media: AcquiredMedia, settings: CrusherSettings, fps: float) -> list:
     from google.genai import types
 
     parts: list = []
-    resolution = settings.media_resolution
+    resolution = _resolve_media_resolution(settings)
 
     if media.carousel_image_paths:
         for idx, img_path in enumerate(media.carousel_image_paths):
@@ -105,9 +114,8 @@ def _media_parts(client, media: AcquiredMedia, settings: CrusherSettings, fps: f
         mime = "video/mp4"
         if data:
             parts.append(
-                types.Part.from_bytes(
-                    data=data,
-                    mime_type=mime,
+                types.Part(
+                    inline_data=types.Blob(data=data, mime_type=mime),
                     media_resolution=resolution,
                     video_metadata=types.VideoMetadata(fps=fps),
                 )
@@ -117,6 +125,7 @@ def _media_parts(client, media: AcquiredMedia, settings: CrusherSettings, fps: f
             parts.append(
                 types.Part(
                     file_data=types.FileData(file_uri=uploaded.uri, mime_type=mime),
+                    media_resolution=resolution,
                     video_metadata=types.VideoMetadata(fps=fps),
                 )
             )
@@ -150,7 +159,7 @@ def analyze_media(
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=CrusherAnalysis,
-                media_resolution=settings.media_resolution,
+                media_resolution=_resolve_media_resolution(settings),
             ),
         )
 
