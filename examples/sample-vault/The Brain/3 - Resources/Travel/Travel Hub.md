@@ -8,6 +8,8 @@ Triage cards here: set `status` to `kept`, `promoted`, or `tossed` in each
 card's frontmatter. Run `second-brain ledger-sync` before deleting tossed
 cards so they are never re-ingested.
 
+Open [[Travel Map]] for the embedded Map View of geocoded pins.
+
 ## 1. Hotspots & Frequent Recommendations
 
 ```dataview

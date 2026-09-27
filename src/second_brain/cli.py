@@ -104,6 +104,13 @@ def cmd_model_a_enrich(settings: Settings, args) -> int:
     return 0
 
 
+def cmd_migrate_travel(settings: Settings, args) -> int:
+    from .migrate_travel import run_migrate_travel
+
+    run_migrate_travel(settings, apply=args.apply, force_templates=args.force_templates)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="second-brain", description="Saved videos -> Obsidian cards pipeline.")
     parser.add_argument("-c", "--config", help="Path to config.yaml (default: $SECOND_BRAIN_CONFIG or ./config.yaml)")
@@ -118,6 +125,21 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("write-cards", help="Step 3: organized_tiktoks.csv -> vault cards").set_defaults(func=cmd_write_cards)
     sub.add_parser("run", help="Steps 1-3 in order").set_defaults(func=cmd_run)
     sub.add_parser("ledger-sync", help="Record vault URLs and tossed cards in the URL ledger").set_defaults(func=cmd_ledger_sync)
+    p_travel = sub.add_parser(
+        "migrate-travel",
+        help="Backfill Travel Map View frontmatter on existing cards; ensure Travel Hub/Map notes",
+    )
+    p_travel.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write changes (default is dry-run)",
+    )
+    p_travel.add_argument(
+        "--force-templates",
+        action="store_true",
+        help="Overwrite Travel Hub.md / Travel Map.md even if they already exist",
+    )
+    p_travel.set_defaults(func=cmd_migrate_travel)
     sub.add_parser("model-a-ingest", help="Experimental: per-URL tiered analysis (1-3 requests per URL)").set_defaults(func=cmd_model_a_ingest)
     sub.add_parser("model-a-enrich", help="Experimental: re-classify existing high-value cards").set_defaults(func=cmd_model_a_enrich)
     return parser
