@@ -124,3 +124,50 @@ def test_missing_vault_is_a_config_error(settings, tmp_path):
     _csv(settings, _rows(1))
     with pytest.raises(ConfigError):
         wc.run_write_cards(settings)
+
+
+def test_map_marker_color_for_weight_tiers():
+    assert wc.map_marker_color_for_weight(0) == "#9E9E9E"
+    assert wc.map_marker_color_for_weight(1) == "#42A5F5"
+    assert wc.map_marker_color_for_weight(2) == "#42A5F5"
+    assert wc.map_marker_color_for_weight(3) == "#FFA726"
+    assert wc.map_marker_color_for_weight(5) == "#FFA726"
+    assert wc.map_marker_color_for_weight(6) == "#EF5350"
+    assert wc.map_marker_color_for_weight(99) == "#EF5350"
+    assert wc.map_marker_color_for_weight(-1) == "#9E9E9E"
+    with pytest.raises(ValueError):
+        wc.map_marker_color_for_weight("hot")
+
+
+def test_travel_card_gets_map_view_and_weight_frontmatter(settings):
+    rows = [{
+        "Category": "Travel",
+        "Summary": "Quiet alley ramen in Shibuya",
+        "Creator": "sample.traveler",
+        "URL": "https://t.co/travel/1",
+        "Title": "Shibuya ramen tip",
+        "Tags": "tokyo,ramen",
+    }]
+    _csv(settings, rows)
+    result = wc.run_write_cards(settings)
+    assert result.created == 1
+    card_path = _cards(settings)[0]
+    assert card_path.parent.name == "Travel"
+    fm = parse_frontmatter(card_path.read_text(encoding="utf-8"))
+    assert fm["category"] == "Travel"
+    assert fm["summary"] == "Quiet alley ramen in Shibuya"
+    assert fm["location"] == ""
+    assert fm["location_name"] == ""
+    assert fm["weight"] == 0
+    assert fm["mapMarkerColor"] == "#9E9E9E"
+    assert fm["tags"] == ["saved-media", "category/travel"]
+
+
+def test_non_travel_card_omits_map_view_frontmatter(settings):
+    _csv(settings, _rows(1))
+    wc.run_write_cards(settings)
+    fm = parse_frontmatter(_cards(settings)[0].read_text(encoding="utf-8"))
+    assert "location" not in fm
+    assert "weight" not in fm
+    assert "mapMarkerColor" not in fm
+    assert "summary" not in fm
