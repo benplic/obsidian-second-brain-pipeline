@@ -152,16 +152,31 @@ def analyze_media(
     prompt = _build_prompt(ctx, settings, taxonomy_keys)
     parts = [prompt, *_media_parts(client, media, settings, fps)]
 
+    def _generate(model: str):
+        # 503 is "try again", not a bad request. call_with_backoff only retries 429.
+        last_exc: genai_errors.APIError | None = None
+        for attempt in range(3):
+            try:
+                return client.models.generate_content(
+                    model=model,
+                    contents=parts,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=CrusherAnalysis,
+                        media_resolution=_resolve_media_resolution(settings),
+                    ),
+                )
+            except genai_errors.APIError as exc:
+                if exc.code not in {500, 503} or attempt == 2:
+                    raise
+                last_exc = exc
+                delay = settings.backoff_base_seconds * (attempt + 1)
+                logger.warning("Gemini %s (attempt %d/3). Waiting %.0fs...", exc.code, attempt + 1, delay)
+                time.sleep(delay)
+        raise last_exc  # pragma: no cover
+
     def _call():
-        return client.models.generate_content(
-            model=settings.model,
-            contents=parts,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=CrusherAnalysis,
-                media_resolution=_resolve_media_resolution(settings),
-            ),
-        )
+        return _generate(settings.model)
 
     try:
         response = call_with_backoff(

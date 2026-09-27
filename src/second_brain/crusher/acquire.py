@@ -20,6 +20,50 @@ from .probe import ProbeResult, count_scene_changes, probe_file
 logger = logging.getLogger(__name__)
 
 _CREATION_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+_COOKIE_DB_LOCKED = "cookie database"
+_cookie_fallback_warned = False
+
+
+def _run_ytdlp(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    """Run yt-dlp. If the browser cookie DB is locked, retry once without cookies."""
+
+    def once(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=_CREATION_FLAGS,
+        )
+
+    result = once(cmd)
+    if settings_cookies_failed(result.stderr or "") and "--cookies-from-browser" in cmd:
+        global _cookie_fallback_warned
+        if not _cookie_fallback_warned:
+            _cookie_fallback_warned = True
+            logger.warning(
+                "Browser cookies could not be read (cookie database locked). Retrying without cookies. "
+                "Close Edge/Chrome completely and re-run if Instagram carousels still have no images."
+            )
+        cleaned: list[str] = []
+        skip_next = False
+        for part in cmd:
+            if skip_next:
+                skip_next = False
+                continue
+            if part == "--cookies-from-browser":
+                skip_next = True
+                continue
+            cleaned.append(part)
+        result = once(cleaned)
+    return result
+
+
+def settings_cookies_failed(stderr: str) -> bool:
+    text = (stderr or "").lower()
+    return _COOKIE_DB_LOCKED in text or "could not copy chrome cookie" in text
 
 
 class MediaUnavailableError(RuntimeError):
@@ -48,14 +92,7 @@ def _run_ytdlp_json(url: str, settings: CrusherSettings) -> dict | None:
         cmd += ["--cookies-from-browser", settings.cookies_from_browser]
     cmd += ["--", url]
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=60,
-            creationflags=_CREATION_FLAGS,
-        )
+        result = _run_ytdlp(cmd, timeout=60)
     except (subprocess.SubprocessError, OSError) as exc:
         logger.warning("yt-dlp info failed for %s: %s", url, exc)
         return None
@@ -75,19 +112,22 @@ def _run_ytdlp_json(url: str, settings: CrusherSettings) -> dict | None:
 
 def _resolve_webpage_url(url: str, settings: CrusherSettings) -> str:
     """Follow redirects (TikTok t/ short links -> canonical /video/ or /photo/)."""
+    # yt-dlp often fails to expand vm/t short links. A plain GET follows them.
+    if "tiktok.com/t/" in url or "vm.tiktok.com" in url or "vt.tiktok.com" in url:
+        try:
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(req, timeout=20) as resp:
+                final = resp.geturl()
+            if final and final != url:
+                return final.split("?")[0]
+        except (URLError, OSError, ValueError) as exc:
+            logger.debug("Short-link resolve failed for %s: %s", url, exc)
     cmd = ["yt-dlp", "--skip-download", "--print", "webpage_url"]
     if settings.cookies_from_browser:
         cmd += ["--cookies-from-browser", settings.cookies_from_browser]
     cmd += ["--", url]
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=45,
-            creationflags=_CREATION_FLAGS,
-        )
+        result = _run_ytdlp(cmd, timeout=45)
     except (subprocess.SubprocessError, OSError):
         return url
     if result.returncode == 0 and result.stdout.strip():
@@ -141,7 +181,7 @@ def _download_subtitles(info: dict, tmp: Path, url: str, settings: CrusherSettin
                 if settings.cookies_from_browser:
                     cmd[1:1] = ["--cookies-from-browser", settings.cookies_from_browser]
                 try:
-                    subprocess.run(cmd, capture_output=True, timeout=45, check=False, creationflags=_CREATION_FLAGS)
+                    _run_ytdlp(cmd, timeout=45)
                 except (subprocess.SubprocessError, OSError):
                     continue
                 for candidate in tmp.glob("subs*"):
@@ -169,12 +209,30 @@ def _download_video(url: str, tmp: Path, settings: CrusherSettings) -> Path | No
     if settings.cookies_from_browser:
         cmd[1:1] = ["--cookies-from-browser", settings.cookies_from_browser]
     try:
-        subprocess.run(cmd, capture_output=True, timeout=120, check=False, creationflags=_CREATION_FLAGS)
+        result = _run_ytdlp(cmd, timeout=120)
     except (subprocess.SubprocessError, OSError) as exc:
         logger.info("Video download skipped: %s", exc)
         return None
+    found = _first_media_file(tmp)
+    if found:
+        return found
+    # Format filter can miss TikTok HEVC-only ladders; try yt-dlp's default merge.
+    fallback = ["yt-dlp", "-o", str(out), "--max-filesize", f"{int(settings.max_download_mb)}M", "--", url]
+    if settings.cookies_from_browser:
+        fallback[1:1] = ["--cookies-from-browser", settings.cookies_from_browser]
+    try:
+        _run_ytdlp(fallback, timeout=120)
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.info("Video fallback download skipped: %s", exc)
+        if result.stderr:
+            logger.debug("yt-dlp: %s", (result.stderr or "")[-400:])
+        return None
+    return _first_media_file(tmp)
+
+
+def _first_media_file(tmp: Path) -> Path | None:
     for path in tmp.iterdir():
-        if path.suffix.lower() in {".mp4", ".webm", ".mkv"} and path.is_file():
+        if path.suffix.lower() in {".mp4", ".webm", ".mkv", ".m4a"} and path.is_file() and path.stat().st_size > 0:
             return path
     return None
 
@@ -190,7 +248,7 @@ def _download_instagram_slides(url: str, count: int, tmp: Path, settings: Crushe
         if settings.cookies_from_browser:
             cmd[1:1] = ["--cookies-from-browser", settings.cookies_from_browser]
         try:
-            subprocess.run(cmd, capture_output=True, timeout=60, check=False, creationflags=_CREATION_FLAGS)
+            _run_ytdlp(cmd, timeout=60)
         except (subprocess.SubprocessError, OSError):
             continue
         for candidate in tmp.glob(f"ig_slide_{index:02d}*"):
@@ -231,7 +289,7 @@ def _download_carousel_entries(info: dict, tmp: Path, url: str, settings: Crushe
     if settings.cookies_from_browser:
         cmd[1:1] = ["--cookies-from-browser", settings.cookies_from_browser]
     try:
-        subprocess.run(cmd, capture_output=True, timeout=60, check=False, creationflags=_CREATION_FLAGS)
+        _run_ytdlp(cmd, timeout=60)
     except (subprocess.SubprocessError, OSError):
         return paths
     return sorted(p for p in tmp.glob("thumb*") if p.is_file())

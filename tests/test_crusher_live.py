@@ -28,26 +28,37 @@ def _load_cases() -> list[dict]:
 
 @pytest.fixture(scope="module")
 def live_settings(tmp_path_factory):
+    """Use config.yaml (model + cookies) against a throwaway vault so tests don't rewrite The Brain."""
+    from second_brain.cli import _load_dotenv
+    from second_brain.config import ConfigError, settings_from_dict
+
+    repo = Path(__file__).resolve().parents[1]
+    _load_dotenv()
     vault = tmp_path_factory.mktemp("crusher_live_vault")
     (vault / "3 - Resources" / "Inbox").mkdir(parents=True)
     data = tmp_path_factory.mktemp("crusher_live_data")
-    from second_brain.config import settings_from_dict
-
-    return settings_from_dict(
-        {
-            "vault_path": str(vault),
-            "data_dir": str(data),
-            "crusher": {
-                "model": "gemini-3.6-flash",
-                "fallback_model": "gemini-3.8-flash",
-                "requests_per_day": None,
-                "requests_per_minute": None,
-                "tokens_per_minute": None,
-                "max_passes": 2,
-            },
+    try:
+        loaded = load_settings(repo / "config.yaml")
+        model = loaded.gemini.model
+        cookies = loaded.extract.cookies_from_browser
+    except ConfigError:
+        model = "gemini-3.8-flash"
+        cookies = None
+    raw: dict = {
+        "vault_path": str(vault),
+        "data_dir": str(data),
+        "gemini": {"model": model},
+        "crusher": {
+            "fallback_model": None,
+            "requests_per_day": None,
+            "requests_per_minute": None,
+            "tokens_per_minute": None,
+            "max_passes": 2,
         },
-        base_dir=tmp_path_factory.mktemp("cfg"),
-    )
+    }
+    if cookies:
+        raw["extract"] = {"cookies_from_browser": cookies}
+    return settings_from_dict(raw, base_dir=repo)
 
 
 @pytest.mark.live

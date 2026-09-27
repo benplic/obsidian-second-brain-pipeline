@@ -259,7 +259,15 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         if "/" in folder or "\\" in folder or folder in {"", ".", ".."}:
             raise ConfigError(f"taxonomy folder names must be plain folder names, got {folder!r}")
 
+    extract = _build_dataclass(ExtractSettings, _section(raw, "extract"), "extract")
+
     crusher_raw = dict(_section(raw, "crusher"))
+    # Users already set the model and browser cookies for the rest of the pipeline.
+    # Crush only overrides them when crusher.model / crusher.cookies_from_browser are set.
+    if "model" not in crusher_raw:
+        crusher_raw["model"] = gemini.model
+    if "cookies_from_browser" not in crusher_raw and extract.cookies_from_browser:
+        crusher_raw["cookies_from_browser"] = extract.cookies_from_browser
     for list_key in ("api_key_env_vars", "include_folders", "skip_statuses"):
         if list_key in crusher_raw and crusher_raw[list_key] is not None:
             crusher_raw[list_key] = tuple(str(x) for x in crusher_raw[list_key])
@@ -284,7 +292,7 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         # Obsidian does not index dot-folders, so it never shows up as a note.
         ledger_path=_resolve(base_dir, raw.get("ledger_path") or vault_path / LEDGER_DIR_NAME / LEDGER_FILE_NAME, "ledger_path"),
         resources_subdir=str(raw.get("resources_subdir", "3 - Resources")),
-        extract=_build_dataclass(ExtractSettings, _section(raw, "extract"), "extract"),
+        extract=extract,
         gemini=gemini,
         model_a=_build_dataclass(ModelASettings, model_a_raw, "model_a"),
         crusher=crusher,
