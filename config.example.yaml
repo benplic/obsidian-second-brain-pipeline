@@ -44,6 +44,35 @@ model_a:
   backoff_base_seconds: 15
   confidence_threshold: 0.65
 
+# Multimodal re-analysis of existing vault cards (`second-brain crush`).
+# null quota fields = unlimited (429 backoff only). Add GEMINI_API_KEY_2 etc. for rotation.
+crusher:
+  model: "gemini-3.6-flash"
+  fallback_model: null
+  batch_size: 10               # cards processed per checkpoint
+  videos_per_request: 1        # keep 1 for full fidelity; raise on paid tier if desired
+  requests_per_minute: null      # e.g. 15 on free tier
+  requests_per_day: null         # e.g. 20 on free tier (resets midnight Pacific)
+  tokens_per_minute: null
+  api_key_env_vars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+  video_fps: 1.0
+  short_video_fps: 2.0
+  short_video_max_seconds: 30
+  media_resolution: "MEDIA_RESOLUTION_LOW"
+  max_video_seconds: 180
+  max_download_mb: 80
+  inline_max_mb: 18
+  scene_threshold: 0.35
+  max_passes: 3
+  confidence_threshold: 0.55
+  include_folders: []          # empty = all category folders under 3 - Resources
+  skip_statuses: ["tossed"]
+  prompt_version: "1"          # bump to force re-analysis
+  geocoder: "nominatim"        # or "none"
+  geocoder_user_agent: "obsidian-second-brain-pipeline/0.1"
+  cookies_from_browser: null
+  backoff_base_seconds: 15
+
 # Optional: replace the default category -> folder map (order = prompt order).
 # taxonomy:
 #   "Saved Music": "Music"

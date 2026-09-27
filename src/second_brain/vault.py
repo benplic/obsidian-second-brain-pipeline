@@ -71,6 +71,124 @@ def parse_frontmatter(content: str) -> dict:
     return result
 
 
+def parse_frontmatter_strict(content: str) -> dict | None:
+    """Parse frontmatter without the regex fallback.
+
+    Returns ``{}`` when the note has no frontmatter and ``None`` when the YAML
+    block exists but does not parse to a mapping. Anything that rewrites the
+    whole frontmatter must use this: rewriting from the lenient regex result
+    would silently drop every key except ``url``/``status``.
+    """
+    fm_text, _ = split_frontmatter(content)
+    if fm_text is None:
+        return {}
+    try:
+        data = yaml.safe_load(fm_text)
+    except yaml.YAMLError as exc:
+        logger.debug("Strict frontmatter parse failed: %s", exc)
+        return None
+    if data is None:
+        return {}
+    return data if isinstance(data, dict) else None
+
+
+# Stable frontmatter key order for rewritten cards. Keys not listed keep their
+# existing relative order after these.
+DEFAULT_KEY_ORDER: tuple[str, ...] = (
+    "category",
+    "creator",
+    "url",
+    "status",
+    "tags",
+    "summary",
+    "location",
+    "location_name",
+    "weight",
+    "mapMarkerColor",
+)
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _yaml_scalar(value: object) -> str:
+    """Render one scalar the way the pipeline writes it (numbers bare, text quoted)."""
+    if value is None:
+        return '""'
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        # JSON is valid YAML flow syntax; nested maps are rare in cards.
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return yaml_str(value)
+
+
+def format_frontmatter(fm: dict, key_order: tuple[str, ...] = DEFAULT_KEY_ORDER) -> str:
+    """Serialize frontmatter in pipeline order with YAML-safe scalars.
+
+    ``tags`` stay unquoted block items (what every existing card uses),
+    ``location`` pairs stay inline ``[lat, lng]`` for Map View, and other lists
+    become quoted block items.
+    """
+    lines: list[str] = []
+
+    def emit(key: str, value: object) -> None:
+        if key == "tags":
+            if not isinstance(value, list):
+                lines.append(f"tags: {yaml_str(value)}")
+            elif not value:
+                lines.append("tags: []")
+            else:
+                lines.append("tags:")
+                lines.extend(f"  - {tag}" for tag in value)
+            return
+        if key == "weight":
+            lines.append(f"weight: {_as_int(value)}")
+            return
+        if key == "location" and isinstance(value, (list, tuple)) and len(value) == 2:
+            lines.append(f"location: [{value[0]}, {value[1]}]")
+            return
+        if key == "url":
+            lines.append(f"url: {yaml_str(value)}")
+            return
+        if isinstance(value, (list, tuple)):
+            if not value:
+                lines.append(f"{key}: []")
+            else:
+                lines.append(f"{key}:")
+                lines.extend(f"  - {_yaml_scalar(item)}" for item in value)
+            return
+        lines.append(f"{key}: {_yaml_scalar(value)}")
+
+    seen: set[str] = set()
+    for key in key_order:
+        if key in fm:
+            emit(key, fm[key])
+            seen.add(key)
+    for key, value in fm.items():
+        if key not in seen:
+            emit(str(key), value)
+    return "\n".join(lines)
+
+
+def rebuild_card(content: str, new_fm: dict) -> str:
+    """Replace the YAML block; preserve the note body byte-for-byte."""
+    fm_text, body = split_frontmatter(content)
+    if fm_text is None:
+        raise ValueError("Card has no YAML frontmatter block")
+    # Body from split_frontmatter is everything after the closing ---;
+    # keep leading newlines as stored so diffs stay small.
+    if body.startswith("\n") or body == "":
+        return f"---\n{format_frontmatter(new_fm)}\n---\n{body}"
+    return f"---\n{format_frontmatter(new_fm)}\n---\n\n{body}"
+
+
 def iter_cards(resources_dir: Path):
     """Yield CardRef for every Markdown file with a ``url`` in its frontmatter."""
     resources_dir = Path(resources_dir)

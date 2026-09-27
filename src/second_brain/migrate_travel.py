@@ -19,7 +19,9 @@ from pathlib import Path
 from .config import Settings
 from .io_utils import atomic_write_text
 from .steps.write_cards import TRAVEL_CATEGORY, map_marker_color_for_weight
-from .vault import parse_frontmatter, split_frontmatter, yaml_str
+# format_frontmatter / rebuild_card live in vault.py (shared with the crusher);
+# re-exported here so existing imports keep working.
+from .vault import format_frontmatter, parse_frontmatter, rebuild_card, split_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -31,20 +33,6 @@ MAP_FILENAME = "Travel Map.md"
 _SKIP_NAME_SUFFIXES = ("Hub.md", "Map.md", "Kanban.md")
 
 _SUMMARY_BODY_RE = re.compile(r"^> \*\*Summary:\*\*\s*(.+)$", re.MULTILINE)
-
-# Stable frontmatter order matching newly written Travel cards.
-_KEY_ORDER = (
-    "category",
-    "creator",
-    "url",
-    "status",
-    "tags",
-    "summary",
-    "location",
-    "location_name",
-    "weight",
-    "mapMarkerColor",
-)
 
 TRAVEL_HUB_TEMPLATE = """# Travel Hub & Destination Matrix
 
@@ -193,65 +181,6 @@ def merge_travel_defaults(fm: dict, body: str) -> tuple[dict, list[str]]:
         changed.append("tags")
 
     return merged, changed
-
-
-def format_frontmatter(fm: dict) -> str:
-    """Serialize frontmatter in pipeline order with YAML-safe scalars."""
-    lines: list[str] = []
-    seen: set[str] = set()
-
-    def emit(key: str, value: object) -> None:
-        if key == "tags":
-            if not isinstance(value, list):
-                lines.append(f"tags: {yaml_str(value)}")
-                return
-            if not value:
-                lines.append("tags: []")
-                return
-            lines.append("tags:")
-            for tag in value:
-                lines.append(f"  - {tag}")
-            return
-        if key == "weight":
-            lines.append(f"weight: {_as_int_weight(value)}")
-            return
-        if key == "location" and isinstance(value, (list, tuple)) and len(value) == 2:
-            # Map View accepts [lat, lng]; keep numeric form when already geocoded.
-            lines.append(f"location: [{value[0]}, {value[1]}]")
-            return
-        if value is None:
-            lines.append(f'{key}: ""')
-            return
-        if isinstance(value, bool):
-            lines.append(f"{key}: {'true' if value else 'false'}")
-            return
-        if isinstance(value, (int, float)) and key != "url":
-            lines.append(f"{key}: {value}")
-            return
-        lines.append(f"{key}: {yaml_str(value)}")
-
-    for key in _KEY_ORDER:
-        if key not in fm:
-            continue
-        emit(key, fm[key])
-        seen.add(key)
-    for key, value in fm.items():
-        if key in seen:
-            continue
-        emit(key, value)
-    return "\n".join(lines)
-
-
-def rebuild_card(content: str, new_fm: dict) -> str:
-    """Replace the YAML block; preserve the note body byte-for-byte."""
-    fm_text, body = split_frontmatter(content)
-    if fm_text is None:
-        raise ValueError("Card has no YAML frontmatter block")
-    # Body from split_frontmatter is everything after the closing ---;
-    # keep leading newlines as stored so diffs stay small.
-    return f"---\n{format_frontmatter(new_fm)}\n---\n{body}" if body.startswith("\n") or body == "" else (
-        f"---\n{format_frontmatter(new_fm)}\n---\n\n{body}"
-    )
 
 
 def migrate_card_content(content: str) -> tuple[str | None, list[str]]:

@@ -29,6 +29,10 @@ CLEAN_METADATA_FILE = "clean_metadata.json"
 ORGANIZED_CSV_FILE = "organized_tiktoks.csv"
 LEDGER_DIR_NAME = ".second-brain"
 LEDGER_FILE_NAME = "url_ledger.jsonl"
+CRUSHER_STATE_FILE = "crusher_state.jsonl"
+CRUSHER_CACHE_DIR = "crusher_cache"
+CRUSHER_LOCK_FILE = "crusher.lock"
+CRUSHER_REPORT_FILE = "crusher_report.md"
 
 
 class ConfigError(ValueError):
@@ -67,6 +71,45 @@ class ModelASettings:
 
 
 @dataclass(frozen=True)
+class CrusherSettings:
+    """Multimodal re-analysis of existing vault cards (``second-brain crush``).
+
+    Quota fields use ``null`` in YAML to mean unlimited (rely on 429 backoff).
+    Keys are read only from ``api_key_env_vars`` in the environment, never from
+    this file.
+    """
+
+    model: str = "gemini-3.6-flash"
+    fallback_model: str | None = None
+    batch_size: int = 10
+    videos_per_request: int = 1
+    requests_per_minute: int | None = None
+    requests_per_day: int | None = None
+    tokens_per_minute: int | None = None
+    api_key_env_vars: tuple[str, ...] = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+    video_fps: float = 1.0
+    short_video_fps: float = 2.0
+    short_video_max_seconds: float = 30.0
+    media_resolution: str = "MEDIA_RESOLUTION_LOW"
+    max_video_seconds: float = 180.0
+    max_download_mb: float = 80.0
+    inline_max_mb: float = 18.0
+    scene_threshold: float = 0.35
+    max_passes: int = 3
+    confidence_threshold: float = 0.55
+    include_folders: tuple[str, ...] = ()
+    skip_statuses: tuple[str, ...] = ("tossed",)
+    prompt_version: str = "1"
+    geocoder: str = "nominatim"
+    geocoder_user_agent: str = "obsidian-second-brain-pipeline/0.1"
+    cookies_from_browser: str | None = None
+    backoff_base_seconds: float = 15.0
+    file_poll_seconds: float = 2.0
+    file_poll_max_wait_seconds: float = 120.0
+    lock_stale_hours: float = 6.0
+
+
+@dataclass(frozen=True)
 class Settings:
     vault_path: Path
     data_dir: Path
@@ -77,6 +120,7 @@ class Settings:
     extract: ExtractSettings = field(default_factory=ExtractSettings)
     gemini: GeminiSettings = field(default_factory=GeminiSettings)
     model_a: ModelASettings = field(default_factory=ModelASettings)
+    crusher: CrusherSettings = field(default_factory=CrusherSettings)
     folder_map: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_FOLDER_MAP))
 
     @property
@@ -95,6 +139,26 @@ class Settings:
     def model_a_inbox_path(self) -> Path:
         # Original Model A read its queue from inside the vault Inbox folder.
         return self.model_a.inbox_path or (self.resources_dir / "Inbox" / "pending_links.txt")
+
+    @property
+    def second_brain_dir(self) -> Path:
+        return self.vault_path / LEDGER_DIR_NAME
+
+    @property
+    def crusher_state_path(self) -> Path:
+        return self.second_brain_dir / CRUSHER_STATE_FILE
+
+    @property
+    def crusher_cache_dir(self) -> Path:
+        return self.second_brain_dir / CRUSHER_CACHE_DIR
+
+    @property
+    def crusher_lock_path(self) -> Path:
+        return self.second_brain_dir / CRUSHER_LOCK_FILE
+
+    @property
+    def crusher_report_path(self) -> Path:
+        return self.data_dir / CRUSHER_REPORT_FILE
 
     def require_vault(self) -> None:
         """Fail fast with a readable message instead of silently creating a new vault."""
@@ -195,6 +259,21 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         if "/" in folder or "\\" in folder or folder in {"", ".", ".."}:
             raise ConfigError(f"taxonomy folder names must be plain folder names, got {folder!r}")
 
+    crusher_raw = dict(_section(raw, "crusher"))
+    for list_key in ("api_key_env_vars", "include_folders", "skip_statuses"):
+        if list_key in crusher_raw and crusher_raw[list_key] is not None:
+            crusher_raw[list_key] = tuple(str(x) for x in crusher_raw[list_key])
+    for nullable_int in ("requests_per_minute", "requests_per_day", "tokens_per_minute"):
+        if nullable_int in crusher_raw and crusher_raw[nullable_int] == "":
+            crusher_raw[nullable_int] = None
+    crusher = _build_dataclass(CrusherSettings, crusher_raw, "crusher")
+    if crusher.batch_size < 1:
+        raise ConfigError("crusher.batch_size must be >= 1")
+    if crusher.videos_per_request < 1:
+        raise ConfigError("crusher.videos_per_request must be >= 1")
+    if crusher.max_passes < 1:
+        raise ConfigError("crusher.max_passes must be >= 1")
+
     return Settings(
         vault_path=vault_path,
         data_dir=data_dir,
@@ -208,5 +287,6 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         extract=_build_dataclass(ExtractSettings, _section(raw, "extract"), "extract"),
         gemini=gemini,
         model_a=_build_dataclass(ModelASettings, model_a_raw, "model_a"),
+        crusher=crusher,
         folder_map=folder_map,
     )

@@ -58,6 +58,7 @@ src/second_brain/
   vault.py  ledger.py         Frontmatter scan, card writing, URL ledger
   gemini.py io_utils.py       Backoff and atomic/fsynced file helpers
   taxonomy.py                 Category -> folder map
+  crusher/                    Multimodal re-analysis (`second-brain crush`)
   model_a/                    Experimental deep-analysis track (see below)
 examples/sample-vault/        Fake vault: a few cards, a Comedy Hub, a Kanban board
 tests/                        pytest suite (Gemini is mocked, no network)
@@ -115,6 +116,8 @@ second-brain parse-instagram    # one-off: import a Meta "saved items" export in
 second-brain ledger-sync        # record vault URLs + tossed cards in the ledger
 second-brain migrate-travel     # dry-run: backfill Travel Map View frontmatter
 second-brain migrate-travel --apply   # write Travel schema + ensure Hub/Map notes
+second-brain crush              # dry-run: multimodal re-analysis -> cache + report
+second-brain crush --apply      # rewrite cards from cache (recategorize, findings, children)
 second-brain -v <command>       # debug logging
 ```
 
@@ -137,6 +140,25 @@ Cards are created with `status: "inbox"`. Set `status` to `kept`, `promoted`, or
 ### Try it with the sample vault
 
 `config.example.yaml` points at `examples/sample-vault/The Brain`, so you can open that folder in Obsidian to see the card format, the `Comedy Hub.md` Dataview table, and the Movies Kanban board.
+
+## Crusher (multimodal re-analysis)
+
+``second-brain crush`` walks existing vault cards (in configurable batches), downloads
+each video with ``yt-dlp``, and sends the real media to Gemini (video, carousel images,
+subtitles). It is built for edge cases metadata-only Step 2 misses: destination
+slideshows, on-screen song/album lists, silent clips, and misleading captions.
+
+Default mode is a **dry run**: analyses are cached under
+``<vault>/.second-brain/crusher_cache/``, progress is recorded in
+``crusher_state.jsonl``, and a summary lands in ``data/crusher_report.md``.
+Re-run with ``--apply`` to rewrite frontmatter, insert a ``## Video Analysis`` block,
+recategorize/move cards (unless ``category_locked: true``), and split multi-item videos
+into child notes (``--no-children`` to disable).
+
+Quota is **config-driven** (``crusher.requests_per_day``, ``requests_per_minute``,
+``tokens_per_minute`` — use ``null`` for unlimited). Rotate keys via
+``crusher.api_key_env_vars`` (for example ``GEMINI_API_KEY_2``). Requires **ffmpeg**
+on PATH for probing and slide detection.
 
 ## Model A (experimental)
 

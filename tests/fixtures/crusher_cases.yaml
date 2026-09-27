@@ -1,0 +1,51 @@
+# Opt-in live smoke cases for `second-brain crush --url ...` / pytest -m live.
+# Replace placeholder URLs with real examples from your vault when available.
+#
+# Each case documents the edge case the crusher must handle; mocked unit tests
+# cover the same shapes without network access.
+
+cases:
+  - id: travel_slideshow_tiktok_photo
+    description: TikTok /photo/ post with a different destination on each slide
+    url: "https://www.tiktok.com/@example/video/0000000000000000001"
+    expected_category: Travel
+    min_items: 2
+    item_kinds: [destination]
+
+  - id: travel_instagram_carousel
+    description: Instagram carousel (_type playlist) with multiple travel stops
+    url: "https://www.instagram.com/p/EXAMPLE000000000000000000000000000/"
+    expected_category: Travel
+    min_items: 2
+    item_kinds: [destination]
+
+  - id: albums_spoken_no_captions
+    description: Creator lists favorite albums in speech; platform captions empty or wrong
+    url: "https://www.tiktok.com/@example/video/0000000000000000002"
+    expected_category: Saved Music
+    min_items: 3
+    item_kinds: [album]
+
+  - id: songs_on_screen_only
+    description: Song titles shown as on-screen text over music; little or no speech
+    url: "https://www.tiktok.com/@example/video/0000000000000000003"
+    expected_category: Saved Music
+    min_items: 3
+    item_kinds: [song]
+
+  - id: silent_visual_recipe
+    description: No audio stream; instructions shown visually
+    url: "https://www.tiktok.com/@example/video/0000000000000000004"
+    expected_category: Recipes & Food
+    min_items: 0
+    media_shape: silent
+
+  - id: misleading_caption
+    description: Caption tags #travel but content is tech or comedy
+    url: "https://www.tiktok.com/@example/video/0000000000000000005"
+    expected_category_not: Travel
+
+  - id: unavailable_deleted
+    description: Deleted or private video; crusher must not retry every run
+    url: "https://www.tiktok.com/@example/video/0000000000000000006"
+    expect_unavailable: true
