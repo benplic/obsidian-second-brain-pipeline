@@ -113,6 +113,8 @@ second-brain write-cards        # Step 3
 second-brain run                # 1 -> 2 -> 3
 second-brain parse-instagram    # one-off: import a Meta "saved items" export instead of Step 1
 second-brain ledger-sync        # record vault URLs + tossed cards in the ledger
+second-brain migrate-travel     # dry-run: backfill Travel Map View frontmatter
+second-brain migrate-travel --apply   # write Travel schema + ensure Hub/Map notes
 second-brain -v <command>       # debug logging
 ```
 
