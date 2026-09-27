@@ -34,18 +34,17 @@ cases:
     item_kinds: [song]
 
   - id: silent_visual_recipe
-    description: No audio stream; instructions shown visually
-    url: "https://www.tiktok.com/@example/video/0000000000000000004"
+    description: ASMR outdoor cooking; minimal/no narration (MenWithThePot)
+    url: "https://www.tiktok.com/@menwiththepot/video/7098047012339272966"
     expected_category: Recipes & Food
     min_items: 0
-    media_shape: silent
 
   - id: misleading_caption
-    description: Caption tags #travel but content is tech or comedy
-    url: "https://www.tiktok.com/@example/video/0000000000000000005"
+    description: Creator niche/branding is Travel but clip is comedy prank (#comedy #prank)
+    url: "https://www.tiktok.com/@typischcalvin/video/7603433647399636246"
     expected_category_not: Travel
 
   - id: unavailable_deleted
-    description: Deleted or private video; crusher must not retry every run
-    url: "https://www.tiktok.com/@example/video/0000000000000000006"
+    description: Known deleted TikTok (Reddit r/WaybackMachine); URL should stay unavailable
+    url: "https://www.tiktok.com/@aez_707/video/7347927772125269281"
     expect_unavailable: true

@@ -85,6 +85,9 @@ def test_crusher_live_case(case, live_settings, monkeypatch):
 
     st = state.get(norm)
     if st and st.status == "failed":
+        err = st.last_error or ""
+        if "503" in err or "high demand" in err.lower():
+            pytest.skip(f"Gemini capacity: {err[:200]}")
         pytest.fail(f"Crusher analysis failed: {st.last_error}")
     if st and st.status == STATUS_UNAVAILABLE:
         if case.get("expect_unavailable"):
