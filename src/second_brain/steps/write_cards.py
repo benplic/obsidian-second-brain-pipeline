@@ -5,6 +5,10 @@ row from the CSV (atomic rewrite). The original rewrote the CSV only after the
 whole loop, so a crash mid-run replayed every row; and because it deduped by
 file name (``<title> (<row>).md``) rather than URL, replayed or unrelated
 same-titled rows could be skipped as "done" or duplicated.
+
+Travel cards also carry Map View fields (``location``, ``weight``,
+``mapMarkerColor``) so a later enrichment script can geocode places and
+re-tint pins without changing the card template again.
 """
 
 from __future__ import annotations
@@ -22,6 +26,17 @@ from .categorize import CSV_FIELDS
 
 logger = logging.getLogger(__name__)
 
+# Obsidian Map View pin colors by how often a place shows up across media.
+# Future enrichment scripts should call map_marker_color_for_weight() after
+# recalculating weight so pin styling stays consistent with new cards.
+TRAVEL_CATEGORY = "Travel"
+_WEIGHT_TIER_COLORS: tuple[tuple[int, str], ...] = (
+    (6, "#EF5350"),   # Hotspot / must-visit
+    (3, "#FFA726"),   # Trending / frequent
+    (1, "#42A5F5"),   # Noticed
+)
+_WEIGHT_ZERO_COLOR = "#9E9E9E"  # Unprocessed / single mention (muted grey)
+
 
 @dataclass
 class WriteCardsResult:
@@ -30,16 +45,59 @@ class WriteCardsResult:
     failed: int = 0
 
 
+def map_marker_color_for_weight(weight: int) -> str:
+    """Return the Map View pin color for a Travel card weight.
+
+    Tiers: 0 grey, 1-2 blue, 3-5 orange, 6+ red. Negative weights are treated
+    as zero so a bad enrichment pass cannot invent an unknown color.
+    """
+    try:
+        value = int(weight)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Travel weight must be an integer, got {weight!r}") from exc
+    if value < 0:
+        # TODO: Decide whether enrichment should clamp or reject negatives.
+        value = 0
+    if value == 0:
+        return _WEIGHT_ZERO_COLOR
+    for minimum, color in _WEIGHT_TIER_COLORS:
+        if value >= minimum:
+            return color
+    return _WEIGHT_ZERO_COLOR
+
+
+def _travel_frontmatter_lines(summary: str) -> str:
+    """Default Map View / weighting keys for a new Travel card (weight 0).
+
+    ``summary`` is duplicated into frontmatter so the Travel Hub Dataview
+    table can show "Core Idea" without scraping the note body.
+    """
+    color = map_marker_color_for_weight(0)
+    return (
+        f"summary: {yaml_str(summary)}\n"
+        'location: ""  # [lat, lng] or "City, Country" for Map View\n'
+        'location_name: ""  # e.g. "Shibuya, Tokyo" (filled by enrichment)\n'
+        "weight: 0  # times this location is referenced across saved media\n"
+        f'mapMarkerColor: "{color}"  # pin color; see map_marker_color_for_weight()'
+    )
+
+
 def render_card(row: dict) -> tuple[str, str, str]:
     """Return (category, title, markdown) for one CSV row.
 
     Template and frontmatter match the original script so existing Dataview
-    queries keep working; values are now YAML-escaped.
+    queries keep working; values are now YAML-escaped. Travel cards get
+    extra location/weight keys for the Map View plugin.
     """
     category = row.get("Category") or DEFAULT_CATEGORY
     title = row.get("Title") or row.get("Summary") or "Saved Post"
     creator = row.get("Creator") or "Unknown"
     url = row.get("URL", "")
+    summary = row.get("Summary") or ""
+    # Travel-only block keeps non-Travel cards unchanged for Dataview compat.
+    travel_block = (
+        f"\n{_travel_frontmatter_lines(summary)}" if category == TRAVEL_CATEGORY else ""
+    )
     content = f"""---
 category: {yaml_str(category)}
 creator: {yaml_str(creator)}
@@ -47,12 +105,12 @@ url: {yaml_str(url)}
 status: "inbox"
 tags:
   - saved-media
-  - {category_tag(category)}
+  - {category_tag(category)}{travel_block}
 ---
 
 # {title}
 
-> **Summary:** {row.get('Summary', '')}
+> **Summary:** {summary}
 
 - **Creator:** @{creator}
 - **Source:** [{url}]({url})
