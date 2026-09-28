@@ -78,7 +78,8 @@ crusher:
   ytdlp_retries: 3
   ytdlp_max_attempts: 3
   ytdlp_backoff_base_seconds: 30
-  unavailable_after_attempts: 3  # transient failures across this many runs -> unavailable
+  unavailable_after_attempts: 3  # transient fetch failures across this many runs -> unavailable
+  manual_review_after_attempts: 3  # analysis still failing after this many tries -> manual-review list (~1% of a healthy batch)
 
   # Tier thresholds
   min_transcript_words: 25     # fewer caption words -> run audio transcription

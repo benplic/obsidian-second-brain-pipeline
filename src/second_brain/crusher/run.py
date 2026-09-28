@@ -34,12 +34,14 @@ from .classify import Classifier, JevClassifier, build_classifier, build_state, 
 from .gate import decide_visuals
 from .lock import CrusherLock, CrusherLockError
 from .postpass import run_postpass
+from .review import classify_terminal
 from .probe import ensure_ffmpeg
 from .schema import CrusherAnalysis
 from .state import (
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_FAILED_RETRYABLE,
+    STATUS_MANUAL_REVIEW,
     STATUS_NEEDS_REVIEW,
     STATUS_UNAVAILABLE,
     CrusherState,
@@ -77,6 +79,7 @@ class CrushResult:
     unavailable: int = 0
     retryable: int = 0
     needs_review: int = 0
+    manual_review: int = 0
     stopped_reason: str | None = None
     tiers: Counter = field(default_factory=Counter)
     spend_summary: str = ""
@@ -129,6 +132,20 @@ def _collect_cards(settings: Settings, opts: CrushOptions) -> list:
 def _append_report(path: Path, lines: list[str]) -> None:
     existing = path.read_text(encoding="utf-8") if path.is_file() else "# Crusher report\n\n"
     atomic_write_text(path, existing + "\n".join(lines) + "\n")
+
+
+def _note_manual_review(settings: Settings, card, url: str, reason: str) -> None:
+    """Append one dead-end item to the manual-review list. Idempotent per URL."""
+    path = settings.crusher_manual_review_path
+    existing = path.read_text(encoding="utf-8") if path.is_file() else (
+        "# Crusher manual review\n\n"
+        "The crusher could not analyze these after every tier and retry. "
+        "Watch them yourself; `--reprocess` tries again.\n\n"
+    )
+    if url in existing:
+        return
+    reason = " ".join(reason.split())[:300]
+    atomic_write_text(path, existing + f"- `{card.path.name}` `{url}` — {reason}\n")
 
 
 def _escalate_visuals(media: AcquiredMedia, deps: _Deps, reasons: list[str]) -> bool:
@@ -235,16 +252,36 @@ def _process_card(card, settings: Settings, opts: CrushOptions, deps: _Deps, res
         except (genai_errors.APIError, ValidationError, TimeoutError, RuntimeError) as exc:
             if isinstance(exc, _RUN_STOPPERS):
                 raise
-            deps.state.record(url, status=STATUS_FAILED, prompt_version=pv, last_error=str(exc))
-            result.report_lines.append(f"- FAILED `{url}`: {exc}")
-            return None, STATUS_FAILED
+            attempts = deps.state.attempts(url) + 1
+            status = classify_terminal(
+                failed=True,
+                attempts=attempts,
+                max_attempts=cs.manual_review_after_attempts,
+                complete=False,
+                flagged=False,
+            )
+            deps.state.record(url, status=status, prompt_version=pv, attempts=attempts, last_error=str(exc))
+            if status == STATUS_MANUAL_REVIEW:
+                result.manual_review += 1
+                _note_manual_review(settings, card, url, str(exc))
+                result.report_lines.append(f"- MANUAL REVIEW `{card.path.name}` `{url}`: {exc}")
+            else:
+                result.retryable += 1
+                result.report_lines.append(f"- RETRY LATER `{url}` (attempt {attempts}): {exc}")
+            return None, status
 
         classification = deps.classifier.classify(
             build_state(media, analysis, current_category=current_category), taxonomy=deps.taxonomy
         )
         flagged = merge_classification(analysis, classification, cs, deps.taxonomy)
 
-        status = STATUS_DONE if complete and not flagged else STATUS_NEEDS_REVIEW
+        status = classify_terminal(
+            failed=False,
+            attempts=passes,
+            max_attempts=cs.manual_review_after_attempts,
+            complete=complete,
+            flagged=flagged,
+        )
         if status == STATUS_NEEDS_REVIEW:
             result.needs_review += 1
         tier = TIER_NAMES.get(media.tier_reached, str(media.tier_reached))
@@ -272,6 +309,7 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
     if opts.max_spend is not None:
         cs = replace(cs, max_spend_usd=opts.max_spend)
     budget = BudgetManager(cs, settings.second_brain_dir / "crusher_usage.json")
+    budget.retest_exhausted_keys()
     deps = _Deps(
         cs=cs,
         state=CrusherState(settings.crusher_state_path, settings.crusher_cache_dir),
@@ -345,7 +383,8 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
         logger.info("Report appended to %s", settings.crusher_report_path)
 
     logger.info(
-        "Crusher finished: scanned=%d analyzed=%d written=%d skipped=%d unavailable=%d retryable=%d needs_review=%d",
+        "Crusher finished: scanned=%d analyzed=%d written=%d skipped=%d unavailable=%d retryable=%d "
+        "needs_review=%d manual_review=%d",
         result.scanned,
         result.analyzed,
         result.written,
@@ -353,6 +392,7 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
         result.unavailable,
         result.retryable,
         result.needs_review,
+        result.manual_review,
     )
     logger.info("Crusher %s", result.spend_summary)
     if result.stopped_reason:

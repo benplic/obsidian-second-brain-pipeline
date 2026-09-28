@@ -167,7 +167,10 @@ downloaded.
 
 Every ``yt-dlp`` process goes through one rate-limited runner. It retries 429/5xx/timeouts
 with backoff. Transient failures are marked ``failed-retryable`` and retried next run;
-only dead, private, or blocked links become ``unavailable``. Metadata and transcripts are
+only dead, private, or blocked links become ``unavailable``. An item that still has no
+analysis after ``manual_review_after_attempts`` is appended to ``data/crusher_manual_review.md``
+and is not retried until ``--reprocess``. Incomplete-but-usable analyses stay ``needs-review``
+instead, so that list stays near 1% of a normal batch. Metadata and transcripts are
 cached per URL, so a ``prompt_version`` bump re-runs only the paid summary.
 
 Set ``crusher.price_input_per_m`` / ``price_output_per_m`` for your model, then cap

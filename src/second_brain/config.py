@@ -33,6 +33,7 @@ CRUSHER_STATE_FILE = "crusher_state.jsonl"
 CRUSHER_CACHE_DIR = "crusher_cache"
 CRUSHER_LOCK_FILE = "crusher.lock"
 CRUSHER_REPORT_FILE = "crusher_report.md"
+CRUSHER_MANUAL_REVIEW_FILE = "crusher_manual_review.md"
 
 
 class ConfigError(ValueError):
@@ -122,6 +123,9 @@ class CrusherSettings:
     # A URL that keeps failing transiently (no JSON, 429 every run) is marked
     # unavailable after this many runs so it stops costing time.
     unavailable_after_attempts: int = 3
+    # Analysis failures (not dead links) land on the manual-review list after this
+    # many tries. A healthy batch should put about 1% of items there.
+    manual_review_after_attempts: int = 3
 
     # --- tiered acquisition: captions -> audio -> keyframes ---
     min_transcript_words: int = 25  # below this, captions are "missing" and T2 runs
@@ -224,6 +228,10 @@ class Settings:
     @property
     def crusher_report_path(self) -> Path:
         return self.data_dir / CRUSHER_REPORT_FILE
+
+    @property
+    def crusher_manual_review_path(self) -> Path:
+        return self.data_dir / CRUSHER_MANUAL_REVIEW_FILE
 
     def require_vault(self) -> None:
         """Fail fast with a readable message instead of silently creating a new vault."""

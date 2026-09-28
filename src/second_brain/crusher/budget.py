@@ -177,6 +177,38 @@ class BudgetManager:
     def available_keys(self) -> list[str]:
         return discover_key_env_vars(self.settings.api_key_env_vars)
 
+    def retest_exhausted_keys(self) -> list[str]:
+        """Clear same-day ``exhausted`` flags once per run so the next request confirms them.
+
+        A flag from an earlier run (or a stale write) would otherwise skip the key until
+        midnight Pacific. The first real request is the retest: a daily-quota response
+        marks the key exhausted again and the crusher moves to the next key. Keys that
+        already hit ``requests_per_day`` stay exhausted; that cap is config, not a guess.
+        A new Pacific day is cleared by ``_reset_day_if_needed`` before this check.
+        """
+        cleared: list[str] = []
+        daily_cap = self.settings.requests_per_day
+        for var in self.available_keys():
+            usage = self._key_usage.setdefault(var, KeyUsage())
+            self._reset_day_if_needed(usage)
+            if not usage.exhausted:
+                continue
+            if daily_cap is not None and usage.requests_today >= daily_cap:
+                continue
+            usage.exhausted = False
+            cleared.append(var)
+        if cleared:
+            # Start the run on the first key again so the cleared flag is actually retested.
+            self._key_index = 0
+            logger.info(
+                "Retesting %d key(s) marked exhausted earlier: %s. "
+                "A daily-quota response on the next request marks that key again.",
+                len(cleared),
+                ", ".join(cleared),
+            )
+            self._persist_usage()
+        return cleared
+
     def current_key_var(self) -> str:
         keys = self.available_keys()
         if not keys:

@@ -464,10 +464,63 @@ def _carousel_images(media: AcquiredMedia, settings: CrusherSettings, runner: Yt
 
 
 def _scale_filter(max_px: int) -> str:
-    # Longest side <= max_px, keep aspect, even dimensions for the jpeg encoder.
+    """Longest side <= max_px, then force even dimensions for the jpeg encoder.
+
+    ``force_original_aspect_ratio`` avoids a nested ``if()`` whose commas ffmpeg
+    can split as extra filters.
+    """
+    px = int(max_px)
+    # min() stops a small source from being upscaled to the cap (that only adds tokens).
     return (
-        f"scale='if(gte(iw,ih),min({max_px},iw),-2)':'if(gte(iw,ih),-2,min({max_px},ih))'"
+        f"scale=w='min({px},iw)':h='min({px},ih)':force_original_aspect_ratio=decrease,"
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2"
     )
+
+
+def _ffmpeg(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180,
+        creationflags=_CREATION_FLAGS,
+    )
+
+
+def _grab_frames(video: Path, pattern: Path, vf: str, *, limit: int, variable_rate: bool) -> subprocess.CompletedProcess[str] | None:
+    """One ffmpeg stills pass. ``pattern`` uses forward slashes: on Windows a
+    backslash before ``%03d`` makes image2 reject the path (EINVAL)."""
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vf",
+        vf,
+        "-frames:v",
+        str(limit),
+        "-q:v",
+        "5",
+        "-f",
+        "image2",
+        "-y",
+        pattern.as_posix(),
+    ]
+    if variable_rate:
+        # Insert before -frames so a scene-select pass keeps irregular timestamps.
+        cmd[cmd.index("-frames:v"):cmd.index("-frames:v")] = ["-fps_mode", "vfr"]
+    try:
+        return _ffmpeg(cmd)
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("Keyframe extraction failed for %s: %s", video.name, exc)
+        return None
 
 
 def extract_keyframes(video: Path, out_dir: Path, settings: CrusherSettings) -> list[Path]:
@@ -477,47 +530,45 @@ def extract_keyframes(video: Path, out_dir: Path, settings: CrusherSettings) -> 
     ``keyframe_interval_seconds`` passed since the last kept frame. If that
     yields more than ``max_keyframes`` we subsample evenly instead of truncating,
     so the last items of a "top 10" are not dropped.
+
+    Scene select can emit nothing (audio-only input, or a clip shorter than the
+    interval whose select graph image2 then rejects). A fixed ``fps`` grab is
+    the fallback so a real video still yields frames.
     """
+    if not probe_file(video).has_video:
+        logger.info("No video stream in %s; keyframes skipped.", video.name)
+        return []
+    out_dir.mkdir(parents=True, exist_ok=True)
     interval = max(1.0, float(settings.keyframe_interval_seconds))
+    cap = max(1, int(settings.max_keyframes))
     select = (
         f"select='isnan(prev_selected_t)+gt(scene\\,{settings.scene_threshold})"
-        f"+gte(t-prev_selected_t\\,{interval})'"
+        f"+gte(t-prev_selected_t\\,{interval})',{_scale_filter(settings.keyframe_max_px)}"
     )
-    pattern = out_dir / "kf_%03d.jpg"
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        str(video),
-        "-vf",
-        f"{select},{_scale_filter(settings.keyframe_max_px)}",
-        "-fps_mode",
-        "vfr",
-        "-frames:v",
-        str(settings.max_keyframes * 4),
-        "-q:v",
-        "5",
-        str(pattern),
-    ]
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=180,
-            creationflags=_CREATION_FLAGS,
+    scene_pattern = out_dir / "kf_%03d.jpg"
+    result = _grab_frames(video, scene_pattern, select, limit=cap * 4, variable_rate=True)
+    frames = sorted(p for p in out_dir.glob("kf_*.jpg") if p.is_file() and p.stat().st_size > 0)
+    if not frames:
+        if result is not None and result.returncode != 0:
+            logger.info(
+                "Scene select produced no frames for %s (%s). Falling back to one frame every %.0fs.",
+                video.name,
+                (result.stderr or "").strip()[-180:],
+                interval,
+            )
+        interval_pattern = out_dir / "iv_%03d.jpg"
+        _grab_frames(
+            video,
+            interval_pattern,
+            f"fps=1/{interval},{_scale_filter(settings.keyframe_max_px)}",
+            limit=cap,
+            variable_rate=False,
         )
-    except (subprocess.SubprocessError, OSError) as exc:
-        logger.warning("Keyframe extraction failed for %s: %s", video.name, exc)
+        frames = sorted(p for p in out_dir.glob("iv_*.jpg") if p.is_file() and p.stat().st_size > 0)
+    if not frames:
+        logger.warning("No keyframes extracted from %s.", video.name)
         return []
-    if result.returncode != 0:
-        logger.warning("ffmpeg keyframes exit %s: %s", result.returncode, (result.stderr or "")[-300:])
-    frames = sorted(p for p in out_dir.glob("kf_*.jpg") if p.stat().st_size > 0)
-    return evenly_sample(frames, settings.max_keyframes)
+    return evenly_sample(frames, cap)
 
 
 def evenly_sample(items: list, cap: int) -> list:
@@ -569,6 +620,23 @@ def acquire_visuals(media: AcquiredMedia, settings: CrusherSettings, runner: YtD
     frame_dir = media.tmp_path / "frames"
     frame_dir.mkdir(exist_ok=True)
     media.keyframe_paths = extract_keyframes(video, frame_dir, settings)
+    if not media.keyframe_paths and media.av_path is not None and video == media.av_path:
+        # The audio-tier file can be a container ffmpeg will not turn into stills.
+        # One low-res video download is the last attempt before giving up on frames.
+        height = int(settings.visual_video_max_height)
+        runner.download(
+            media.url,
+            fmt=f"worstvideo[height<={height}]/worst[height<={height}]",
+            output_template=str(media.tmp_path / "vis.%(ext)s"),
+            max_filesize_mb=settings.max_download_mb,
+        )
+        vis = _first_file(media.tmp_path, "vis", _AUDIO_EXTS)
+        if vis is not None:
+            media.visual_source = vis
+            if settings.visual_mode == "video":
+                media.video_path = vis
+            media.keyframe_paths = extract_keyframes(vis, frame_dir, settings)
+            video = vis
     slides = count_scene_changes(video, settings)
     if slides and slides > 1:
         media.probe.expected_slide_count = slides

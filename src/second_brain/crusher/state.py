@@ -23,6 +23,9 @@ STATUS_NEEDS_REVIEW = "needs-review"
 STATUS_FAILED = "failed"
 # 429 / timeout / network: retried on the next run (unlike "unavailable").
 STATUS_FAILED_RETRYABLE = "failed-retryable"
+# Every tier and retry failed. Listed in crusher_manual_review.md; not retried
+# until --reprocess. Kept separate from needs-review (a usable but incomplete analysis).
+STATUS_MANUAL_REVIEW = "manual-review"
 
 
 @dataclass
@@ -184,4 +187,6 @@ class CrusherState:
         state = self.get(url)
         if not state or state.prompt_version != prompt_version:
             return False
-        return state.status in {STATUS_DONE, STATUS_UNAVAILABLE}
+        # needs-review and manual-review are finished enough to apply from cache.
+        # --reprocess is how a later run tries them again.
+        return state.status in {STATUS_DONE, STATUS_UNAVAILABLE, STATUS_NEEDS_REVIEW, STATUS_MANUAL_REVIEW}
