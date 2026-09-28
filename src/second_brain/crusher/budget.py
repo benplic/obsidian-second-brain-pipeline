@@ -1,16 +1,32 @@
-"""Config-driven Gemini quota and multi-key rotation."""
+"""Config-driven Gemini quota and incremental API-key fallback.
+
+Keys are discovered, not listed one by one. For each name in
+``crusher.api_key_env_vars`` the crusher uses that variable and then
+``NAME_2``, ``NAME_3``, ... for as many consecutive numbers as are set in the
+environment. When a key's daily quota is exhausted the same request is retried
+on the next key. The run stops only after the last key is exhausted.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TypeVar
 
 from ..config import CrusherSettings
 from ..gemini import DailyQuotaExhaustedError, MissingApiKeyError
+
+T = TypeVar("T")
+_NUMBERED_SUFFIX = re.compile(r"_(\d+)$")
+# A missing number ends the sequence, so a typo like GEMINI_API_KEY_4 with no
+# _3 cannot silently skip a key. 100 is a backstop, not a supported key count.
+_MAX_NUMBERED_KEYS = 100
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +47,76 @@ def _pacific_midnight_utc(now: datetime | None = None) -> datetime:
     return start_local.astimezone(timezone.utc)
 
 
+class SpendCapReachedError(RuntimeError):
+    """The next call would exceed crusher.max_spend_usd / max_total_spend_usd."""
+
+
+# Output tokens assumed per summary for the pre-flight spend check. Real
+# output (including thinking tokens) is recorded after the call.
+_EST_OUTPUT_TOKENS = 900
+
+
+@dataclass
+class CostLedger:
+    """USD spend for this run plus a lifetime total persisted in the usage file."""
+
+    run_usd: float = 0.0
+    lifetime_usd: float = 0.0
+    gemini_input_tokens: int = 0
+    gemini_output_tokens: int = 0
+    jev_input_tokens: int = 0
+    gemini_calls: int = 0
+    jev_calls: int = 0
+
+
 @dataclass
 class KeyUsage:
     requests_today: int = 0
     day_start_utc: datetime = field(default_factory=_pacific_midnight_utc)
     exhausted: bool = False
+
+
+def discover_key_env_vars(configured: tuple[str, ...], environ: Mapping[str, str] | None = None) -> list[str]:
+    """Ordered env-var names that hold a non-empty key.
+
+    ``("GEMINI_API_KEY",)`` plus ``GEMINI_API_KEY_2`` and ``GEMINI_API_KEY_3``
+    in the environment yields those three, in that order. The sequence for a
+    base name stops at the first missing number.
+    """
+    env = os.environ if environ is None else environ
+
+    def present(name: str) -> bool:
+        return bool((env.get(name) or "").strip())
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    seen_values: set[str] = set()
+
+    def add(name: str) -> None:
+        value = (env.get(name) or "").strip()
+        # The same secret under two names is one quota, not a fallback.
+        if not value or name in seen or value in seen_values:
+            return
+        seen.add(name)
+        seen_values.add(value)
+        ordered.append(name)
+
+    expanded_bases: set[str] = set()
+    for name in configured:
+        match = _NUMBERED_SUFFIX.search(name)
+        base = name[: match.start()] if match else name
+        if base in expanded_bases:
+            add(name)
+            continue
+        expanded_bases.add(base)
+        add(base)
+        number = 2
+        while present(f"{base}_{number}") and number <= _MAX_NUMBERED_KEYS:
+            add(f"{base}_{number}")
+            number += 1
+        # An explicitly configured name that is not in the numbered run (odd, but honored).
+        add(name)
+    return ordered
 
 
 class BudgetManager:
@@ -44,10 +125,13 @@ class BudgetManager:
     def __init__(self, settings: CrusherSettings, usage_path: Path):
         self.settings = settings
         self.usage_path = Path(usage_path)
-        self._minute_requests: list[float] = []
-        self._minute_tokens: list[tuple[float, int]] = []
+        # Per key, so falling over to the next key does not inherit this key's minute window.
+        self._minute_requests: dict[str, list[float]] = {}
+        self._minute_tokens: dict[str, list[tuple[float, int]]] = {}
         self._key_usage: dict[str, KeyUsage] = {}
         self._key_index = 0
+        self.cost = CostLedger()
+        self._price_warning_logged = False
         self._load_usage_file()
 
     def _load_usage_file(self) -> None:
@@ -63,6 +147,7 @@ class BudgetManager:
                     day_start_utc=datetime.fromisoformat(raw["day_start_utc"]),
                     exhausted=bool(raw.get("exhausted", False)),
                 )
+            self.cost.lifetime_usd = float((data.get("cost") or {}).get("lifetime_usd", 0.0))
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             logger.warning("Could not load crusher usage file (%s); starting fresh.", exc)
 
@@ -77,7 +162,8 @@ class BudgetManager:
                     "exhausted": usage.exhausted,
                 }
                 for name, usage in self._key_usage.items()
-            }
+            },
+            "cost": {"lifetime_usd": round(self.cost.lifetime_usd, 6)},
         }
         self.usage_path.parent.mkdir(parents=True, exist_ok=True)
         self.usage_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -89,12 +175,7 @@ class BudgetManager:
             usage.day_start_utc = _pacific_midnight_utc()
 
     def available_keys(self) -> list[str]:
-        keys: list[str] = []
-        for var in self.settings.api_key_env_vars:
-            value = os.environ.get(var)
-            if value and value.strip():
-                keys.append(var)
-        return keys
+        return discover_key_env_vars(self.settings.api_key_env_vars)
 
     def current_key_var(self) -> str:
         keys = self.available_keys()
@@ -115,33 +196,65 @@ class BudgetManager:
                 continue
             self._key_index = idx
             return var
+        names = ", ".join(keys)
         raise DailyQuotaExhaustedError(
-            "All configured Gemini API keys hit their daily quota (crusher.requests_per_day). Re-run after reset."
+            f"All {len(keys)} Gemini API keys are exhausted for today ({names}). "
+            "Re-run after midnight Pacific, or add GEMINI_API_KEY_<n> and re-run."
         )
 
     def create_client(self):
+        """Client bound to the current fallback key, plus that key's env-var name."""
+        var = self.current_key_var()
+        return self.client_for(var), var
+
+    def client_for(self, key_var: str):
+        """Client for one already-chosen key. The secret is passed in, not copied into the environment."""
         from ..gemini import create_client
 
-        var = self.current_key_var()
-        previous = os.environ.get("GEMINI_API_KEY")
-        os.environ["GEMINI_API_KEY"] = os.environ[var]
-        try:
-            return create_client(), var
-        finally:
-            if previous is None:
-                os.environ.pop("GEMINI_API_KEY", None)
-            else:
-                os.environ["GEMINI_API_KEY"] = previous
+        return create_client(api_key=os.environ[key_var])
 
-    def _prune_minute_windows(self, now: float) -> None:
+    def call_rotating(self, call: Callable[[str], T]) -> T:
+        """Run ``call(key_var)``. On a daily-quota error, retire that key and retry on the next.
+
+        Per-minute 429s are not switched here; ``call_with_backoff`` already waits those out
+        on the current key. This walks the discovered keys in order and raises
+        ``DailyQuotaExhaustedError`` once the last key is spent.
+        """
+        while True:
+            var = self.current_key_var()
+            try:
+                return call(var)
+            except DailyQuotaExhaustedError as exc:
+                self.mark_daily_exhausted(var)
+                remaining = self._ready_keys()
+                if not remaining:
+                    raise DailyQuotaExhaustedError(
+                        f"All {len(self.available_keys())} Gemini API keys are exhausted for today. "
+                        "Re-run after midnight Pacific, or add another GEMINI_API_KEY_<n>."
+                    ) from exc
+                logger.warning(
+                    "%s daily quota exhausted. Switching to %s (%d key(s) left).",
+                    var,
+                    remaining[0],
+                    len(remaining),
+                )
+
+    def _ready_keys(self) -> list[str]:
+        ready: list[str] = []
+        for var in self.available_keys():
+            usage = self._key_usage.setdefault(var, KeyUsage())
+            self._reset_day_if_needed(usage)
+            if usage.exhausted:
+                continue
+            if self.settings.requests_per_day is not None and usage.requests_today >= self.settings.requests_per_day:
+                continue
+            ready.append(var)
+        return ready
+
+    def _prune_minute_windows(self, key_var: str, now: float) -> None:
         cutoff = now - 60.0
-        self._minute_requests = [t for t in self._minute_requests if t >= cutoff]
-        self._minute_tokens = [(t, n) for t, n in self._minute_tokens if t >= cutoff]
-
-    def estimate_tokens(self, *, duration_seconds: float, fps: float, image_count: int = 0) -> int:
-        # Rough heuristic for pre-flight TPM throttling (video ~300 tok/s sampled + images).
-        video_tokens = int(max(duration_seconds, 1.0) * fps * 300)
-        return video_tokens + image_count * 600 + 800
+        self._minute_requests[key_var] = [t for t in self._minute_requests.get(key_var, []) if t >= cutoff]
+        self._minute_tokens[key_var] = [(t, n) for t, n in self._minute_tokens.get(key_var, []) if t >= cutoff]
 
     def wait_for_slot(self, *, estimated_tokens: int, sleep=time.sleep) -> None:
         """Block until RPM/RPD/TPM allow one request on the current key."""
@@ -150,14 +263,16 @@ class BudgetManager:
             usage = self._key_usage.setdefault(key_var, KeyUsage())
             self._reset_day_if_needed(usage)
             now = time.time()
-            self._prune_minute_windows(now)
+            self._prune_minute_windows(key_var, now)
+            requests = self._minute_requests.setdefault(key_var, [])
+            tokens = self._minute_tokens.setdefault(key_var, [])
             rpm = self.settings.requests_per_minute
             tpm = self.settings.tokens_per_minute
-            if rpm is not None and len(self._minute_requests) >= rpm:
-                sleep(max(0.5, 60.0 - (now - self._minute_requests[0]) + 0.1))
+            if rpm is not None and len(requests) >= rpm:
+                sleep(max(0.5, 60.0 - (now - requests[0]) + 0.1))
                 continue
             if tpm is not None:
-                used = sum(n for _, n in self._minute_tokens)
+                used = sum(n for _, n in tokens)
                 if used + estimated_tokens > tpm:
                     sleep(1.0)
                     continue
@@ -168,9 +283,72 @@ class BudgetManager:
         self._reset_day_if_needed(usage)
         usage.requests_today += 1
         now = time.time()
-        self._minute_requests.append(now)
-        self._minute_tokens.append((now, tokens))
+        self._minute_requests.setdefault(key_var, []).append(now)
+        self._minute_tokens.setdefault(key_var, []).append((now, tokens))
         self._persist_usage()
+
+    # -- cost ledger --------------------------------------------------------
+
+    def _prices_known(self) -> bool:
+        return self.settings.price_input_per_m is not None and self.settings.price_output_per_m is not None
+
+    def _gemini_usd(self, input_tokens: int, output_tokens: int) -> float:
+        if not self._prices_known():
+            return 0.0
+        return (
+            input_tokens * float(self.settings.price_input_per_m)
+            + output_tokens * float(self.settings.price_output_per_m)
+        ) / 1_000_000
+
+    def _add_usd(self, usd: float) -> None:
+        self.cost.run_usd += usd
+        self.cost.lifetime_usd += usd
+
+    def record_gemini_cost(self, input_tokens: int, output_tokens: int) -> None:
+        self.cost.gemini_calls += 1
+        self.cost.gemini_input_tokens += int(input_tokens)
+        self.cost.gemini_output_tokens += int(output_tokens)
+        self._add_usd(self._gemini_usd(int(input_tokens), int(output_tokens)))
+        self._persist_usage()
+
+    def record_jev_usage(self, input_tokens: int) -> None:
+        # Jev output is free; only input is billed.
+        self.cost.jev_calls += 1
+        self.cost.jev_input_tokens += int(input_tokens)
+        self._add_usd(int(input_tokens) * float(self.settings.jev_price_input_per_m) / 1_000_000)
+        self._persist_usage()
+
+    def check_spend(self, *, estimated_input_tokens: int) -> None:
+        """Raise SpendCapReachedError if the next Gemini call could cross a cap."""
+        caps = [
+            ("crusher.max_spend_usd (this run)", self.settings.max_spend_usd, self.cost.run_usd),
+            ("crusher.max_total_spend_usd (lifetime)", self.settings.max_total_spend_usd, self.cost.lifetime_usd),
+        ]
+        if not any(cap is not None for _, cap, _ in caps):
+            return
+        if not self._prices_known():
+            if not self._price_warning_logged:
+                self._price_warning_logged = True
+                logger.warning(
+                    "A spend cap is set but crusher.price_input_per_m / price_output_per_m are not. "
+                    "Spend cannot be measured, so the cap is NOT enforced. Set both prices for your model."
+                )
+            return
+        projected = self._gemini_usd(estimated_input_tokens, _EST_OUTPUT_TOKENS)
+        for label, cap, spent in caps:
+            if cap is not None and spent + projected > float(cap):
+                raise SpendCapReachedError(
+                    f"{label} ${float(cap):.2f} reached (spent ${spent:.4f}, next call ~${projected:.4f})."
+                )
+
+    def spend_summary(self) -> str:
+        c = self.cost
+        priced = "" if self._prices_known() else " (Gemini prices not set: Gemini $ shown as 0)"
+        return (
+            f"spend this run ${c.run_usd:.4f}, lifetime ${c.lifetime_usd:.4f}{priced}; "
+            f"gemini calls={c.gemini_calls} in={c.gemini_input_tokens} out={c.gemini_output_tokens}; "
+            f"jev calls={c.jev_calls} in={c.jev_input_tokens}"
+        )
 
     def mark_daily_exhausted(self, key_var: str) -> None:
         usage = self._key_usage.setdefault(key_var, KeyUsage())

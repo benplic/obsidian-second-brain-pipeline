@@ -21,6 +21,8 @@ dependencies = [
 
 [project.optional-dependencies]
 model-a = ["opencv-python>=4.8", "pillow>=10.0"]
+# Local speech-to-text for the crusher when a video has no captions ($0 API spend).
+transcribe = ["faster-whisper>=1.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

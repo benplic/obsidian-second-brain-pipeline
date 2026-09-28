@@ -99,7 +99,9 @@ class CrusherSettings:
     confidence_threshold: float = 0.55
     include_folders: tuple[str, ...] = ()
     skip_statuses: tuple[str, ...] = ("tossed",)
-    prompt_version: str = "1"
+    # "2" = tiered text/keyframe summarizer. Bumping re-runs only summary +
+    # classification; cached metadata and transcripts are reused.
+    prompt_version: str = "2"
     geocoder: str = "nominatim"
     geocoder_user_agent: str = "obsidian-second-brain-pipeline/0.1"
     cookies_from_browser: str | None = None
@@ -107,6 +109,69 @@ class CrusherSettings:
     file_poll_seconds: float = 2.0
     file_poll_max_wait_seconds: float = 120.0
     lock_stale_hours: float = 6.0
+
+    # --- yt-dlp pacing / retries (every yt-dlp process goes through crusher/ytdlp.py) ---
+    ytdlp_min_interval_seconds: float = 2.0  # min gap between yt-dlp process starts
+    ytdlp_jitter_seconds: float = 1.0  # random 0..N added to the gap and to backoff
+    ytdlp_retries: int = 3  # passed to yt-dlp --retries / --extractor-retries
+    ytdlp_max_attempts: int = 3  # whole-process retries on 429/5xx/timeout
+    ytdlp_backoff_base_seconds: float = 30.0  # doubles each transient retry
+    ytdlp_socket_timeout_seconds: float = 20.0
+    ytdlp_sleep_requests_seconds: float = 0.0  # yt-dlp --sleep-requests (0 = off)
+    ytdlp_timeout_seconds: float = 120.0  # hard kill per process
+    # A URL that keeps failing transiently (no JSON, 429 every run) is marked
+    # unavailable after this many runs so it stops costing time.
+    unavailable_after_attempts: int = 3
+
+    # --- tiered acquisition: captions -> audio -> keyframes ---
+    min_transcript_words: int = 25  # below this, captions are "missing" and T2 runs
+    min_speech_ratio: float = 0.2  # VAD speech share below this = treat as silent
+    audio_max_mb: float = 25.0
+    whisper_model: str = "base"  # faster-whisper size: tiny/base/small/medium
+    whisper_device: str = "auto"  # auto/cpu/cuda
+    whisper_compute_type: str = "int8"
+    whisper_language: str | None = None  # None = auto-detect
+    keyframe_interval_seconds: float = 8.0  # floor: at least one frame per N seconds
+    max_keyframes: int = 16
+    keyframe_max_px: int = 512
+    visual_video_max_height: int = 360  # T3 video-only download ceiling
+    visual_mode: str = "frames"  # frames (cheap, default) or video (raw clip to Gemini)
+    estimated_tokens_per_image: int = 300  # pre-flight estimate only; actuals come from usage
+    # Gemini 3 thinking tokens bill as OUTPUT. LOW keeps quality for extraction
+    # at a fraction of the cost; null = model default. Auto-dropped if rejected.
+    thinking_level: str | None = "LOW"
+
+    # --- classification (Jev when TYPESAFE_API_KEY is set, Gemini summary fallback) ---
+    classifier: str = "auto"  # auto / jev / gemini
+    jev_endpoint: str = "https://api.typesafe.ai/v1/systemone"
+    jev_model: str = "jev-1.13.0"  # pinned; jev-latest drifts and moves thresholds
+    jev_api_key_env_var: str = "TYPESAFE_API_KEY"
+    jev_min_confidence: float = 0.7  # Jev category overrides Gemini only above this
+    jev_needs_visuals_threshold: float = 0.5
+    jev_tag_threshold: float = 0.5
+    jev_timeout_seconds: float = 20.0
+    jev_max_state_chars: int = 24000  # keeps state well under Jev's ~32k-token single-question limit
+    tag_vocabulary: tuple[str, ...] = (
+        "tutorial",
+        "list-or-ranking",
+        "review",
+        "recommendation",
+        "recipe",
+        "travel-guide",
+        "music",
+        "humor",
+        "motivational",
+        "news",
+        "sponsored-or-ad",
+        "mature-content",
+    )
+
+    # --- cost ledger (prices are per 1M tokens, USD; set them for your model/tier) ---
+    price_input_per_m: float | None = None
+    price_output_per_m: float | None = None
+    jev_price_input_per_m: float = 0.042
+    max_spend_usd: float | None = None  # hard stop for this run; None = no cap
+    max_total_spend_usd: float | None = None  # hard stop across all runs (ledger in .second-brain)
 
 
 @dataclass(frozen=True)
@@ -268,13 +333,31 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         crusher_raw["model"] = gemini.model
     if "cookies_from_browser" not in crusher_raw and extract.cookies_from_browser:
         crusher_raw["cookies_from_browser"] = extract.cookies_from_browser
-    for list_key in ("api_key_env_vars", "include_folders", "skip_statuses"):
+    for list_key in ("api_key_env_vars", "include_folders", "skip_statuses", "tag_vocabulary"):
         if list_key in crusher_raw and crusher_raw[list_key] is not None:
             crusher_raw[list_key] = tuple(str(x) for x in crusher_raw[list_key])
-    for nullable_int in ("requests_per_minute", "requests_per_day", "tokens_per_minute"):
-        if nullable_int in crusher_raw and crusher_raw[nullable_int] == "":
-            crusher_raw[nullable_int] = None
+    for nullable in (
+        "requests_per_minute",
+        "requests_per_day",
+        "tokens_per_minute",
+        "price_input_per_m",
+        "price_output_per_m",
+        "max_spend_usd",
+        "max_total_spend_usd",
+        "whisper_language",
+        "thinking_level",
+    ):
+        if nullable in crusher_raw and crusher_raw[nullable] == "":
+            crusher_raw[nullable] = None
     crusher = _build_dataclass(CrusherSettings, crusher_raw, "crusher")
+    if crusher.classifier not in {"auto", "jev", "gemini"}:
+        raise ConfigError("crusher.classifier must be one of: auto, jev, gemini")
+    if crusher.visual_mode not in {"frames", "video"}:
+        raise ConfigError("crusher.visual_mode must be 'frames' or 'video'")
+    if crusher.max_keyframes < 1 or crusher.keyframe_max_px < 64:
+        raise ConfigError("crusher.max_keyframes must be >= 1 and keyframe_max_px >= 64")
+    if crusher.ytdlp_max_attempts < 1:
+        raise ConfigError("crusher.ytdlp_max_attempts must be >= 1")
     if crusher.batch_size < 1:
         raise ConfigError("crusher.batch_size must be >= 1")
     if crusher.videos_per_request < 1:

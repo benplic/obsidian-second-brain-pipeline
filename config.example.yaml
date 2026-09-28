@@ -44,34 +44,68 @@ model_a:
   backoff_base_seconds: 15
   confidence_threshold: 0.65
 
-# Multimodal re-analysis of existing vault cards (`second-brain crush`).
+# Tiered, budget-capped re-analysis of existing vault cards (`second-brain crush`).
+# Each URL escalates only as far as needed:
+#   captions (free) -> low-bitrate audio + local faster-whisper (free) -> <=512px keyframes (Gemini images)
 # null quota fields = unlimited (429 backoff only). Add GEMINI_API_KEY_2 etc. for rotation.
 crusher:
-  model: "gemini-3.6-flash"
+  # model: omitted = inherit gemini.model above. Pick the cheapest Flash/Flash-Lite your key has.
   fallback_model: null
-  batch_size: 10               # cards processed per checkpoint
-  videos_per_request: 1        # keep 1 for full fidelity; raise on paid tier if desired
-  requests_per_minute: null      # e.g. 15 on free tier
-  requests_per_day: null         # e.g. 20 on free tier (resets midnight Pacific)
+  batch_size: 10               # cards per progress checkpoint
+  requests_per_minute: null    # e.g. 15 on free tier
+  requests_per_day: null       # e.g. 20 on free tier (resets midnight Pacific)
   tokens_per_minute: null
+  # Base key names. GEMINI_API_KEY_2, _3, ... are picked up automatically for as
+  # many consecutive numbers as are set. When one key's daily quota is spent,
+  # the same request retries on the next key. The run stops after the last key.
   api_key_env_vars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
-  video_fps: 1.0
-  short_video_fps: 2.0
-  short_video_max_seconds: 30
   media_resolution: "MEDIA_RESOLUTION_LOW"
+  thinking_level: "LOW"        # thinking tokens bill as output; null = model default
   max_video_seconds: 180
-  max_download_mb: 80
-  inline_max_mb: 18
-  scene_threshold: 0.35
-  max_passes: 3
+  max_passes: 3                # each retry escalates: text -> keyframes -> denser keyframes
   confidence_threshold: 0.55
   include_folders: []          # empty = all category folders under 3 - Resources
   skip_statuses: ["tossed"]
-  prompt_version: "1"          # bump to force re-analysis
+  prompt_version: "2"          # bump to re-run summary/classification (downloads + transcripts are cached)
   geocoder: "nominatim"        # or "none"
   geocoder_user_agent: "obsidian-second-brain-pipeline/0.1"
-  cookies_from_browser: null
+  cookies_from_browser: null   # inherits extract.cookies_from_browser when omitted
   backoff_base_seconds: 15
+
+  # yt-dlp pacing (prevents 429s / soft IP bans across 2,000 URLs)
+  ytdlp_min_interval_seconds: 2
+  ytdlp_jitter_seconds: 1
+  ytdlp_retries: 3
+  ytdlp_max_attempts: 3
+  ytdlp_backoff_base_seconds: 30
+  unavailable_after_attempts: 3  # transient failures across this many runs -> unavailable
+
+  # Tier thresholds
+  min_transcript_words: 25     # fewer caption words -> run audio transcription
+  min_speech_ratio: 0.2        # less speech than this -> treat as silent -> keyframes
+  whisper_model: "base"        # needs: pip install -e ".[transcribe]"
+  whisper_device: "auto"
+  whisper_compute_type: "int8"
+  keyframe_interval_seconds: 8 # at least one frame per N seconds (plus scene cuts)
+  max_keyframes: 16
+  keyframe_max_px: 512
+  scene_threshold: 0.35
+  visual_mode: "frames"        # "video" sends the raw low-res clip (much more expensive)
+
+  # Classification: "auto" uses Jev when TYPESAFE_API_KEY is set in the environment,
+  # otherwise the Gemini summary's own category fields.
+  classifier: "auto"
+  jev_model: "jev-1.13.0"      # pin versions; jev-latest shifts thresholds
+  jev_min_confidence: 0.7
+  # tag_vocabulary: ["tutorial", "recipe", "travel-guide", "music", "sponsored-or-ad"]
+
+  # Cost ledger (USD per 1M tokens). Set these from your model's pricing page,
+  # otherwise Gemini spend reads $0 and the caps below cannot be enforced.
+  price_input_per_m: null
+  price_output_per_m: null
+  jev_price_input_per_m: 0.042
+  max_spend_usd: null          # hard stop for one run (CLI: --max-spend 2.50)
+  max_total_spend_usd: 15      # hard stop across all runs
 
 # Optional: replace the default category -> folder map (order = prompt order).
 # taxonomy:

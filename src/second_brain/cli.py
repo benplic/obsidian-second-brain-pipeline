@@ -114,6 +114,7 @@ def cmd_crush(settings: Settings, args) -> int:
         url=args.url,
         reprocess=args.reprocess,
         write_children=not args.no_children,
+        max_spend=args.max_spend,
     )
     result = run_crush(settings, opts)
     if result.stopped_reason:
@@ -167,6 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_crush.add_argument("--url", help="Process a single normalized URL")
     p_crush.add_argument("--reprocess", action="store_true", help="Ignore crusher state/cache for this run")
     p_crush.add_argument("--no-children", action="store_true", help="Do not create child item notes")
+    p_crush.add_argument(
+        "--max-spend",
+        type=float,
+        help="Stop this run before Gemini spend exceeds N USD (overrides crusher.max_spend_usd)",
+    )
     p_crush.set_defaults(func=cmd_crush)
     sub.add_parser("model-a-ingest", help="Experimental: per-URL tiered analysis (1-3 requests per URL)").set_defaults(func=cmd_model_a_ingest)
     sub.add_parser("model-a-enrich", help="Experimental: re-classify existing high-value cards").set_defaults(func=cmd_model_a_enrich)

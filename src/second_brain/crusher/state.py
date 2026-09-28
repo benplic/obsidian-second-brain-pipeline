@@ -21,6 +21,8 @@ STATUS_DONE = "done"
 STATUS_UNAVAILABLE = "unavailable"
 STATUS_NEEDS_REVIEW = "needs-review"
 STATUS_FAILED = "failed"
+# 429 / timeout / network: retried on the next run (unlike "unavailable").
+STATUS_FAILED_RETRYABLE = "failed-retryable"
 
 
 @dataclass
@@ -135,6 +137,46 @@ class CrusherState:
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("Invalid crusher cache for %s: %s", url, exc)
             return None
+
+    # -- stage caches -------------------------------------------------------
+    # crusher_cache/<hash>/<stage>.json holds prompt-independent work (yt-dlp
+    # metadata, transcripts). A prompt_version bump re-runs only the paid
+    # summary/classification, never the download or transcription.
+
+    def stage_path(self, url: str, stage: str) -> Path:
+        safe = "".join(ch for ch in stage if ch.isalnum() or ch in "-_") or "stage"
+        return self.cache_dir / self.url_hash(url) / f"{safe}.json"
+
+    def load_stage(self, url: str, stage: str) -> dict | None:
+        path = self.stage_path(url, stage)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Ignoring unreadable stage cache %s: %s", path, exc)
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def save_stage(self, url: str, stage: str, payload: dict) -> None:
+        path = self.stage_path(url, stage)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(path, payload)
+
+    def clear_stages(self, url: str) -> None:
+        """Used by --reprocess so stale caption URLs / transcripts are refetched."""
+        folder = self.cache_dir / self.url_hash(url)
+        if not folder.is_dir():
+            return
+        for path in folder.glob("*.json"):
+            try:
+                path.unlink()
+            except OSError as exc:
+                logger.warning("Could not delete stage cache %s: %s", path, exc)
+
+    def attempts(self, url: str) -> int:
+        state = self.get(url)
+        return state.attempts if state else 0
 
     def should_skip(self, url: str, *, prompt_version: str, reprocess: bool) -> bool:
         if reprocess:

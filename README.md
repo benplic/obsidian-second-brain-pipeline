@@ -143,10 +143,38 @@ Cards are created with `status: "inbox"`. Set `status` to `kept`, `promoted`, or
 
 ## Crusher (multimodal re-analysis)
 
-``second-brain crush`` walks existing vault cards (in configurable batches), downloads
-each video with ``yt-dlp``, and sends the real media to Gemini (video, carousel images,
-subtitles). It is built for edge cases metadata-only Step 2 misses: destination
-slideshows, on-screen song/album lists, silent clips, and misleading captions.
+``second-brain crush`` walks existing vault cards (in configurable batches) and works out
+what each video actually contains. It is built for the edge cases metadata-only Step 2
+misses: destination slideshows, on-screen song/album lists, silent clips, and misleading
+captions.
+
+It is **tiered to stay cheap** (target: well under $15 for ~2,000 videos). Each URL
+escalates only as far as it needs to:
+
+1. **Metadata**: one ``yt-dlp`` JSON call (title, caption, duration, caption-track URLs).
+2. **Captions**: fetched straight from the caption-track URL. Free, no download.
+3. **Audio**: only when captions are missing. Downloads the smallest audio stream and
+   transcribes it locally with faster-whisper (``pip install -e ".[transcribe]"``). Free.
+4. **Keyframes**: only when the content is likely on screen (carousel, silent, a list
+   claim with little speech, or the text summary came up short). Downloads a <=360p
+   file and sends at most ``max_keyframes`` <=512px frames.
+
+A Gemini call then writes the summary and items from that text (plus frames when
+present). Classification (category, media shape, relevance 0-5, content tags) uses
+[Jev](https://www.jevtypesafeai.com/how-to-use) when ``TYPESAFE_API_KEY`` is set;
+otherwise it uses the Gemini summary's own fields. Full-resolution video is never
+downloaded.
+
+Every ``yt-dlp`` process goes through one rate-limited runner. It retries 429/5xx/timeouts
+with backoff. Transient failures are marked ``failed-retryable`` and retried next run;
+only dead, private, or blocked links become ``unavailable``. Metadata and transcripts are
+cached per URL, so a ``prompt_version`` bump re-runs only the paid summary.
+
+Set ``crusher.price_input_per_m`` / ``price_output_per_m`` for your model, then cap
+spend with ``max_total_spend_usd`` (all runs) or ``--max-spend 2.50`` (this run). The
+report ends with a per-run summary: how many items stopped at each tier, spend, and
+average cost per item. Run ``second-brain crush --limit 50`` first and check that
+average before running the full vault.
 
 Default mode is a **dry run**: analyses are cached under
 ``<vault>/.second-brain/crusher_cache/``, progress is recorded in
@@ -156,9 +184,12 @@ recategorize/move cards (unless ``category_locked: true``), and split multi-item
 into child notes (``--no-children`` to disable).
 
 Quota is **config-driven** (``crusher.requests_per_day``, ``requests_per_minute``,
-``tokens_per_minute`` — use ``null`` for unlimited). Rotate keys via
-``crusher.api_key_env_vars`` (for example ``GEMINI_API_KEY_2``). Requires **ffmpeg**
-on PATH for probing and slide detection.
+``tokens_per_minute`` — use ``null`` for unlimited). Fallback keys are incremental:
+set ``GEMINI_API_KEY``, ``GEMINI_API_KEY_2``, ``GEMINI_API_KEY_3``, and so on (any
+count, no gap in the numbers). When one key's daily quota is exhausted the same
+request is retried on the next key, and the run stops only after the last key is
+spent. Requires **ffmpeg**
+on PATH for probing, keyframes, and slide detection (``-fps_mode`` needs ffmpeg 5.1+).
 
 ## Model A (experimental)
 
