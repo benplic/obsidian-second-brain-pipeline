@@ -76,7 +76,7 @@ def test_short_text_list_escalates_to_keyframes(crush_settings, monkeypatch, tmp
 
     calls: list[int] = []
 
-    def fake_analyze(client, budget, key_var, cfg, media, ctx, taxonomy):
+    def fake_analyze(budget, cfg, media, ctx, taxonomy):
         calls.append(len(media.keyframe_paths))
         count = 6 if not media.keyframe_paths else 10
         return _analysis(
@@ -101,7 +101,7 @@ def test_spend_cap_stops_and_resume_skips_done(crush_settings, monkeypatch):
     monkeypatch.setattr("second_brain.crusher.run.acquire_text", lambda u, cfg, runner, **kw: _text_media(u))
     seen: list[str] = []
 
-    def capped(client, budget, key_var, cfg, media, ctx, taxonomy):
+    def capped(budget, cfg, media, ctx, taxonomy):
         if len(seen) >= 1:
             raise SpendCapReachedError("cap")
         seen.append(media.url)
@@ -140,7 +140,7 @@ def test_max_spend_flag_overrides_config(crush_settings, monkeypatch):
     seen: list = []
     monkeypatch.setattr("second_brain.crusher.run.acquire_text", lambda u, cfg, runner, **kw: _text_media(u))
 
-    def spy(client, budget, key_var, cfg, media, ctx, taxonomy):
+    def spy(budget, cfg, media, ctx, taxonomy):
         seen.append(cfg.max_spend_usd)
         return _analysis()
 

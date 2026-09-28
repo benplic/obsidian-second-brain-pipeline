@@ -19,7 +19,7 @@ from google.genai import errors as genai_errors
 from pydantic import ValidationError
 
 from ..config import CrusherSettings
-from ..gemini import DailyQuotaExhaustedError, RateLimitExhaustedError, call_with_backoff
+from ..gemini import RateLimitExhaustedError, call_with_backoff
 from .acquire import AcquiredMedia
 from .budget import BudgetManager
 from .schema import CrusherAnalysis
@@ -204,70 +204,74 @@ def _usage(response) -> tuple[int, int]:
 
 
 def analyze_media(
-    client,
     budget: BudgetManager,
-    key_var: str,
     settings: CrusherSettings,
     media: AcquiredMedia,
     ctx: AnalyzeContext,
     taxonomy_keys: list[str],
 ) -> CrusherAnalysis:
-    """One summary call. Raises SpendCapReachedError before calling when over budget."""
+    """One summary call, retried on the next Gemini key when the current key's daily quota is spent.
+
+    Raises SpendCapReachedError before calling when over budget, and
+    DailyQuotaExhaustedError only after every discovered key is exhausted.
+    """
     prompt = build_prompt(ctx, media, settings, taxonomy_keys)
     tokens = estimate_tokens(prompt, media, settings)
-    budget.check_spend(estimated_input_tokens=tokens)
-    budget.wait_for_slot(estimated_tokens=tokens)
-    parts = [prompt, *media_parts(client, media, settings)]
 
-    def _generate(model: str):
-        # 503 is "try again", not a bad request. call_with_backoff only retries 429.
-        global _thinking_supported
-        last_exc: genai_errors.APIError | None = None
-        for attempt in range(3):
-            try:
-                return client.models.generate_content(model=model, contents=parts, config=_config(settings))
-            except genai_errors.APIError as exc:
-                if exc.code == 400 and _thinking_supported and "thinking" in str(exc).lower():
-                    logger.warning("Model %s rejected thinking_level; retrying without it.", model)
-                    _thinking_supported = False
-                    continue
-                if exc.code not in {500, 503} or attempt == 2:
-                    raise
-                last_exc = exc
-                delay = settings.backoff_base_seconds * (attempt + 1)
-                logger.warning("Gemini %s (attempt %d/3). Waiting %.0fs...", exc.code, attempt + 1, delay)
-                time.sleep(delay)
-        raise last_exc  # pragma: no cover
+    def _once(key_var: str) -> CrusherAnalysis:
+        budget.check_spend(estimated_input_tokens=tokens)
+        budget.wait_for_slot(estimated_tokens=tokens)
+        client = budget.client_for(key_var)
+        parts = [prompt, *media_parts(client, media, settings)]
 
-    try:
-        response = call_with_backoff(
-            lambda: _generate(settings.model),
-            max_retries=5,
-            base_seconds=settings.backoff_base_seconds,
-        )
-    except DailyQuotaExhaustedError:
-        budget.mark_daily_exhausted(key_var)
-        raise
-    except genai_errors.APIError as exc:
-        if exc.code == 429:
-            raise RateLimitExhaustedError(str(exc)) from exc
-        raise
+        def _generate(model: str):
+            # 503 is "try again", not a bad request. call_with_backoff only retries 429.
+            global _thinking_supported
+            last_exc: genai_errors.APIError | None = None
+            for attempt in range(3):
+                try:
+                    return client.models.generate_content(model=model, contents=parts, config=_config(settings))
+                except genai_errors.APIError as exc:
+                    if exc.code == 400 and _thinking_supported and "thinking" in str(exc).lower():
+                        logger.warning("Model %s rejected thinking_level; retrying without it.", model)
+                        _thinking_supported = False
+                        continue
+                    if exc.code not in {500, 503} or attempt == 2:
+                        raise
+                    last_exc = exc
+                    delay = settings.backoff_base_seconds * (attempt + 1)
+                    logger.warning("Gemini %s (attempt %d/3). Waiting %.0fs...", exc.code, attempt + 1, delay)
+                    time.sleep(delay)
+            raise last_exc  # pragma: no cover
 
-    in_tok, out_tok = _usage(response)
-    budget.record_request(key_var, tokens=in_tok or tokens)
-    budget.record_gemini_cost(in_tok or tokens, out_tok)
-    try:
-        return CrusherAnalysis.model_validate_json(response.text or "")
-    except ValidationError:
-        if not settings.fallback_model:
+        try:
+            response = call_with_backoff(
+                lambda: _generate(settings.model),
+                max_retries=5,
+                base_seconds=settings.backoff_base_seconds,
+            )
+        except genai_errors.APIError as exc:
+            if exc.code == 429:
+                raise RateLimitExhaustedError(str(exc)) from exc
             raise
-        logger.warning("Primary model JSON invalid; trying fallback %s", settings.fallback_model)
-        response = call_with_backoff(
-            lambda: _generate(settings.fallback_model),
-            max_retries=3,
-            base_seconds=settings.backoff_base_seconds,
-        )
+
         in_tok, out_tok = _usage(response)
         budget.record_request(key_var, tokens=in_tok or tokens)
         budget.record_gemini_cost(in_tok or tokens, out_tok)
-        return CrusherAnalysis.model_validate_json(response.text or "")
+        try:
+            return CrusherAnalysis.model_validate_json(response.text or "")
+        except ValidationError:
+            if not settings.fallback_model:
+                raise
+            logger.warning("Primary model JSON invalid; trying fallback %s", settings.fallback_model)
+            response = call_with_backoff(
+                lambda: _generate(settings.fallback_model),
+                max_retries=3,
+                base_seconds=settings.backoff_base_seconds,
+            )
+            in_tok, out_tok = _usage(response)
+            budget.record_request(key_var, tokens=in_tok or tokens)
+            budget.record_gemini_cost(in_tok or tokens, out_tok)
+            return CrusherAnalysis.model_validate_json(response.text or "")
+
+    return budget.call_rotating(_once)

@@ -7,7 +7,7 @@ import os
 import pytest
 
 from second_brain.config import CrusherSettings
-from second_brain.crusher.budget import BudgetManager, SpendCapReachedError
+from second_brain.crusher.budget import BudgetManager, SpendCapReachedError, discover_key_env_vars
 from second_brain.gemini import DailyQuotaExhaustedError
 
 
@@ -57,6 +57,49 @@ def test_jev_usage_priced_input_only(tmp_path):
     budget.record_jev_usage(1_000_000)
     assert budget.cost.run_usd == pytest.approx(0.042)
     assert "jev calls=1" in budget.spend_summary()
+
+
+def test_numbered_keys_discovered_until_gap():
+    env = {
+        "GEMINI_API_KEY": "a",
+        "GEMINI_API_KEY_2": "b",
+        "GEMINI_API_KEY_3": "c",
+        "GEMINI_API_KEY_5": "skipped-gap",
+        "GOOGLE_API_KEY": "a",  # same secret as the first key: not a second quota
+        "GOOGLE_API_KEY_2": "d",
+    }
+    found = discover_key_env_vars(("GEMINI_API_KEY", "GOOGLE_API_KEY"), env)
+    assert found == ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3", "GOOGLE_API_KEY_2"]
+
+
+def test_call_rotating_walks_until_last_key(tmp_path, monkeypatch):
+    for name, value in (("GEMINI_API_KEY", "k1"), ("GEMINI_API_KEY_2", "k2"), ("GEMINI_API_KEY_3", "k3")):
+        monkeypatch.setenv(name, value)
+    budget = BudgetManager(CrusherSettings(api_key_env_vars=("GEMINI_API_KEY",)), tmp_path / "usage.json")
+    seen: list[str] = []
+
+    def call(var: str):
+        seen.append(var)
+        if var != "GEMINI_API_KEY_3":
+            raise DailyQuotaExhaustedError(var)
+        return "ok"
+
+    assert budget.call_rotating(call) == "ok"
+    assert seen == ["GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"]
+    # The spent keys stay spent: the next call starts on the last key.
+    assert budget.current_key_var() == "GEMINI_API_KEY_3"
+
+
+def test_call_rotating_raises_when_last_key_is_exhausted(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k1")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "k2")
+    budget = BudgetManager(CrusherSettings(api_key_env_vars=("GEMINI_API_KEY",)), tmp_path / "usage.json")
+
+    def call(var: str):
+        raise DailyQuotaExhaustedError(var)
+
+    with pytest.raises(DailyQuotaExhaustedError, match="All 2 Gemini"):
+        budget.call_rotating(call)
 
 
 def test_budget_raises_when_all_keys_exhausted(tmp_path, monkeypatch):

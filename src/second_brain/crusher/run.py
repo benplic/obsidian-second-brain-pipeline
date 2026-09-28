@@ -167,8 +167,7 @@ def _summarize_with_escalation(
     while passes < cs.max_passes:
         passes += 1
         ctx.pass_index = passes - 1
-        client, key_var = deps.budget.create_client()
-        analysis = analyze_media(client, deps.budget, key_var, cs, media, ctx, deps.taxonomy)
+        analysis = analyze_media(deps.budget, cs, media, ctx, deps.taxonomy)
         completeness = check_completeness(analysis, media)
         if passes >= cs.max_passes:
             complete = completeness.complete

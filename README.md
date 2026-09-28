@@ -184,8 +184,11 @@ recategorize/move cards (unless ``category_locked: true``), and split multi-item
 into child notes (``--no-children`` to disable).
 
 Quota is **config-driven** (``crusher.requests_per_day``, ``requests_per_minute``,
-``tokens_per_minute`` — use ``null`` for unlimited). Rotate keys via
-``crusher.api_key_env_vars`` (for example ``GEMINI_API_KEY_2``). Requires **ffmpeg**
+``tokens_per_minute`` — use ``null`` for unlimited). Fallback keys are incremental:
+set ``GEMINI_API_KEY``, ``GEMINI_API_KEY_2``, ``GEMINI_API_KEY_3``, and so on (any
+count, no gap in the numbers). When one key's daily quota is exhausted the same
+request is retried on the next key, and the run stops only after the last key is
+spent. Requires **ffmpeg**
 on PATH for probing, keyframes, and slide detection (``-fps_mode`` needs ffmpeg 5.1+).
 
 ## Model A (experimental)

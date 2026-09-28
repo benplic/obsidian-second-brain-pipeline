@@ -34,14 +34,18 @@ class DailyQuotaExhaustedError(RuntimeError):
     """The per-day quota is spent; retrying today only burns more requests."""
 
 
-def create_client():
-    """Build a google-genai client from GEMINI_API_KEY / GOOGLE_API_KEY.
+def create_client(api_key: str | None = None):
+    """Build a google-genai client.
 
-    Created lazily (the originals built the client at import time, so even
-    ``--help`` crashed without a key).
+    Pass ``api_key`` when the caller has already chosen a fallback key
+    (``GEMINI_API_KEY_2``, ...). Otherwise the first of ``GEMINI_API_KEY`` /
+    ``GOOGLE_API_KEY`` that is set is used. Created lazily so ``--help`` does
+    not require a key.
     """
     from google import genai
 
+    if api_key and api_key.strip():
+        return genai.Client(api_key=api_key.strip())
     for var in API_KEY_ENV_VARS:
         key = os.environ.get(var)
         if key:

@@ -55,6 +55,9 @@ crusher:
   requests_per_minute: null    # e.g. 15 on free tier
   requests_per_day: null       # e.g. 20 on free tier (resets midnight Pacific)
   tokens_per_minute: null
+  # Base key names. GEMINI_API_KEY_2, _3, ... are picked up automatically for as
+  # many consecutive numbers as are set. When one key's daily quota is spent,
+  # the same request retries on the next key. The run stops after the last key.
   api_key_env_vars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
   media_resolution: "MEDIA_RESOLUTION_LOW"
   thinking_level: "LOW"        # thinking tokens bill as output; null = model default
