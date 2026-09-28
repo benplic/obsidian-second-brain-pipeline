@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from .acquire import AcquiredMedia
 from .schema import CrusherAnalysis
 
+_SLIDESHOW_SHAPES = {"slideshow_video", "photo_slideshow", "carousel_images"}
+_MAX_PLAUSIBLE_SLIDES = 35
+
 
 @dataclass
 class CompletenessResult:
@@ -33,8 +36,12 @@ def check_completeness(analysis: CrusherAnalysis, media: AcquiredMedia) -> Compl
 
     if analysis.list_expected_count is not None and analysis.list_expected_count > 0:
         expected_candidates.append(analysis.list_expected_count)
-    if media.probe.expected_slide_count:
-        expected_candidates.append(media.probe.expected_slide_count)
+    # Scene cuts equal slides only in slideshows. A normal edited clip (cooking,
+    # vlog) can have 100+ cuts, which would demand 100+ items and burn every
+    # retry pass for nothing.
+    slides = media.probe.expected_slide_count
+    if slides and analysis.media_shape in _SLIDESHOW_SHAPES and slides <= _MAX_PLAUSIBLE_SLIDES:
+        expected_candidates.append(slides)
     if media.carousel_image_paths:
         expected_candidates.append(len(media.carousel_image_paths))
     if analysis.evidence.slides_seen and analysis.evidence.slides_seen > actual:

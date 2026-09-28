@@ -39,3 +39,30 @@ def test_completeness_ok_when_counts_match():
         probe=ProbeResult(expected_slide_count=3),
     )
     assert check_completeness(analysis, media).complete
+
+
+def _one_item(shape: str) -> CrusherAnalysis:
+    return CrusherAnalysis(
+        category="Food & Recipes",
+        confidence=0.8,
+        title="Pasta",
+        summary="One recipe",
+        media_shape=shape,
+        items=[ExtractedItem(kind="recipe", name="Pasta", position=1)],
+    )
+
+
+def test_scene_cuts_ignored_for_normal_edited_video():
+    media = AcquiredMedia(url="https://example.com/v/3", probe=ProbeResult(expected_slide_count=115))
+    assert check_completeness(_one_item("standard_video"), media).complete
+
+
+def test_scene_cuts_count_for_slideshow():
+    media = AcquiredMedia(url="https://example.com/v/4", probe=ProbeResult(expected_slide_count=6))
+    result = check_completeness(_one_item("slideshow_video"), media)
+    assert not result.complete and result.expected_count == 6
+
+
+def test_implausible_slide_count_ignored_even_for_slideshow():
+    media = AcquiredMedia(url="https://example.com/v/5", probe=ProbeResult(expected_slide_count=115))
+    assert check_completeness(_one_item("slideshow_video"), media).complete
