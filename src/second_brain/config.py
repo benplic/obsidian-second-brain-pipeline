@@ -29,6 +29,10 @@ CLEAN_METADATA_FILE = "clean_metadata.json"
 ORGANIZED_CSV_FILE = "organized_tiktoks.csv"
 LEDGER_DIR_NAME = ".second-brain"
 LEDGER_FILE_NAME = "url_ledger.jsonl"
+CRUSHER_STATE_FILE = "crusher_state.jsonl"
+CRUSHER_CACHE_DIR = "crusher_cache"
+CRUSHER_LOCK_FILE = "crusher.lock"
+CRUSHER_REPORT_FILE = "crusher_report.md"
 
 
 class ConfigError(ValueError):
@@ -67,6 +71,110 @@ class ModelASettings:
 
 
 @dataclass(frozen=True)
+class CrusherSettings:
+    """Multimodal re-analysis of existing vault cards (``second-brain crush``).
+
+    Quota fields use ``null`` in YAML to mean unlimited (rely on 429 backoff).
+    Keys are read only from ``api_key_env_vars`` in the environment, never from
+    this file.
+    """
+
+    model: str = "gemini-3.6-flash"
+    fallback_model: str | None = None
+    batch_size: int = 10
+    videos_per_request: int = 1
+    requests_per_minute: int | None = None
+    requests_per_day: int | None = None
+    tokens_per_minute: int | None = None
+    api_key_env_vars: tuple[str, ...] = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+    video_fps: float = 1.0
+    short_video_fps: float = 2.0
+    short_video_max_seconds: float = 30.0
+    media_resolution: str = "MEDIA_RESOLUTION_LOW"
+    max_video_seconds: float = 180.0
+    max_download_mb: float = 80.0
+    inline_max_mb: float = 18.0
+    scene_threshold: float = 0.35
+    max_passes: int = 3
+    confidence_threshold: float = 0.55
+    include_folders: tuple[str, ...] = ()
+    skip_statuses: tuple[str, ...] = ("tossed",)
+    # "2" = tiered text/keyframe summarizer. Bumping re-runs only summary +
+    # classification; cached metadata and transcripts are reused.
+    prompt_version: str = "2"
+    geocoder: str = "nominatim"
+    geocoder_user_agent: str = "obsidian-second-brain-pipeline/0.1"
+    cookies_from_browser: str | None = None
+    backoff_base_seconds: float = 15.0
+    file_poll_seconds: float = 2.0
+    file_poll_max_wait_seconds: float = 120.0
+    lock_stale_hours: float = 6.0
+
+    # --- yt-dlp pacing / retries (every yt-dlp process goes through crusher/ytdlp.py) ---
+    ytdlp_min_interval_seconds: float = 2.0  # min gap between yt-dlp process starts
+    ytdlp_jitter_seconds: float = 1.0  # random 0..N added to the gap and to backoff
+    ytdlp_retries: int = 3  # passed to yt-dlp --retries / --extractor-retries
+    ytdlp_max_attempts: int = 3  # whole-process retries on 429/5xx/timeout
+    ytdlp_backoff_base_seconds: float = 30.0  # doubles each transient retry
+    ytdlp_socket_timeout_seconds: float = 20.0
+    ytdlp_sleep_requests_seconds: float = 0.0  # yt-dlp --sleep-requests (0 = off)
+    ytdlp_timeout_seconds: float = 120.0  # hard kill per process
+    # A URL that keeps failing transiently (no JSON, 429 every run) is marked
+    # unavailable after this many runs so it stops costing time.
+    unavailable_after_attempts: int = 3
+
+    # --- tiered acquisition: captions -> audio -> keyframes ---
+    min_transcript_words: int = 25  # below this, captions are "missing" and T2 runs
+    min_speech_ratio: float = 0.2  # VAD speech share below this = treat as silent
+    audio_max_mb: float = 25.0
+    whisper_model: str = "base"  # faster-whisper size: tiny/base/small/medium
+    whisper_device: str = "auto"  # auto/cpu/cuda
+    whisper_compute_type: str = "int8"
+    whisper_language: str | None = None  # None = auto-detect
+    keyframe_interval_seconds: float = 8.0  # floor: at least one frame per N seconds
+    max_keyframes: int = 16
+    keyframe_max_px: int = 512
+    visual_video_max_height: int = 360  # T3 video-only download ceiling
+    visual_mode: str = "frames"  # frames (cheap, default) or video (raw clip to Gemini)
+    estimated_tokens_per_image: int = 300  # pre-flight estimate only; actuals come from usage
+    # Gemini 3 thinking tokens bill as OUTPUT. LOW keeps quality for extraction
+    # at a fraction of the cost; null = model default. Auto-dropped if rejected.
+    thinking_level: str | None = "LOW"
+
+    # --- classification (Jev when TYPESAFE_API_KEY is set, Gemini summary fallback) ---
+    classifier: str = "auto"  # auto / jev / gemini
+    jev_endpoint: str = "https://api.typesafe.ai/v1/systemone"
+    jev_model: str = "jev-1.13.0"  # pinned; jev-latest drifts and moves thresholds
+    jev_api_key_env_var: str = "TYPESAFE_API_KEY"
+    jev_min_confidence: float = 0.7  # Jev category overrides Gemini only above this
+    jev_needs_visuals_threshold: float = 0.5
+    jev_tag_threshold: float = 0.5
+    jev_timeout_seconds: float = 20.0
+    jev_max_state_chars: int = 24000  # keeps state well under Jev's ~32k-token single-question limit
+    tag_vocabulary: tuple[str, ...] = (
+        "tutorial",
+        "list-or-ranking",
+        "review",
+        "recommendation",
+        "recipe",
+        "travel-guide",
+        "music",
+        "humor",
+        "motivational",
+        "news",
+        "sponsored-or-ad",
+        "mature-content",
+    )
+
+    # --- cost ledger (prices are per 1M tokens, USD; set them for your model/tier) ---
+    price_input_per_m: float | None = None
+    price_output_per_m: float | None = None
+    jev_price_input_per_m: float = 0.042
+    max_spend_usd: float | None = None  # hard stop for this run; None = no cap
+    max_total_spend_usd: float | None = None  # hard stop across all runs (ledger in .second-brain)
+
+
+@dataclass(frozen=True)
 class Settings:
     vault_path: Path
     data_dir: Path
@@ -77,6 +185,7 @@ class Settings:
     extract: ExtractSettings = field(default_factory=ExtractSettings)
     gemini: GeminiSettings = field(default_factory=GeminiSettings)
     model_a: ModelASettings = field(default_factory=ModelASettings)
+    crusher: CrusherSettings = field(default_factory=CrusherSettings)
     folder_map: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_FOLDER_MAP))
 
     @property
@@ -95,6 +204,26 @@ class Settings:
     def model_a_inbox_path(self) -> Path:
         # Original Model A read its queue from inside the vault Inbox folder.
         return self.model_a.inbox_path or (self.resources_dir / "Inbox" / "pending_links.txt")
+
+    @property
+    def second_brain_dir(self) -> Path:
+        return self.vault_path / LEDGER_DIR_NAME
+
+    @property
+    def crusher_state_path(self) -> Path:
+        return self.second_brain_dir / CRUSHER_STATE_FILE
+
+    @property
+    def crusher_cache_dir(self) -> Path:
+        return self.second_brain_dir / CRUSHER_CACHE_DIR
+
+    @property
+    def crusher_lock_path(self) -> Path:
+        return self.second_brain_dir / CRUSHER_LOCK_FILE
+
+    @property
+    def crusher_report_path(self) -> Path:
+        return self.data_dir / CRUSHER_REPORT_FILE
 
     def require_vault(self) -> None:
         """Fail fast with a readable message instead of silently creating a new vault."""
@@ -195,6 +324,47 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         if "/" in folder or "\\" in folder or folder in {"", ".", ".."}:
             raise ConfigError(f"taxonomy folder names must be plain folder names, got {folder!r}")
 
+    extract = _build_dataclass(ExtractSettings, _section(raw, "extract"), "extract")
+
+    crusher_raw = dict(_section(raw, "crusher"))
+    # Users already set the model and browser cookies for the rest of the pipeline.
+    # Crush only overrides them when crusher.model / crusher.cookies_from_browser are set.
+    if "model" not in crusher_raw:
+        crusher_raw["model"] = gemini.model
+    if "cookies_from_browser" not in crusher_raw and extract.cookies_from_browser:
+        crusher_raw["cookies_from_browser"] = extract.cookies_from_browser
+    for list_key in ("api_key_env_vars", "include_folders", "skip_statuses", "tag_vocabulary"):
+        if list_key in crusher_raw and crusher_raw[list_key] is not None:
+            crusher_raw[list_key] = tuple(str(x) for x in crusher_raw[list_key])
+    for nullable in (
+        "requests_per_minute",
+        "requests_per_day",
+        "tokens_per_minute",
+        "price_input_per_m",
+        "price_output_per_m",
+        "max_spend_usd",
+        "max_total_spend_usd",
+        "whisper_language",
+        "thinking_level",
+    ):
+        if nullable in crusher_raw and crusher_raw[nullable] == "":
+            crusher_raw[nullable] = None
+    crusher = _build_dataclass(CrusherSettings, crusher_raw, "crusher")
+    if crusher.classifier not in {"auto", "jev", "gemini"}:
+        raise ConfigError("crusher.classifier must be one of: auto, jev, gemini")
+    if crusher.visual_mode not in {"frames", "video"}:
+        raise ConfigError("crusher.visual_mode must be 'frames' or 'video'")
+    if crusher.max_keyframes < 1 or crusher.keyframe_max_px < 64:
+        raise ConfigError("crusher.max_keyframes must be >= 1 and keyframe_max_px >= 64")
+    if crusher.ytdlp_max_attempts < 1:
+        raise ConfigError("crusher.ytdlp_max_attempts must be >= 1")
+    if crusher.batch_size < 1:
+        raise ConfigError("crusher.batch_size must be >= 1")
+    if crusher.videos_per_request < 1:
+        raise ConfigError("crusher.videos_per_request must be >= 1")
+    if crusher.max_passes < 1:
+        raise ConfigError("crusher.max_passes must be >= 1")
+
     return Settings(
         vault_path=vault_path,
         data_dir=data_dir,
@@ -205,8 +375,9 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         # Obsidian does not index dot-folders, so it never shows up as a note.
         ledger_path=_resolve(base_dir, raw.get("ledger_path") or vault_path / LEDGER_DIR_NAME / LEDGER_FILE_NAME, "ledger_path"),
         resources_subdir=str(raw.get("resources_subdir", "3 - Resources")),
-        extract=_build_dataclass(ExtractSettings, _section(raw, "extract"), "extract"),
+        extract=extract,
         gemini=gemini,
         model_a=_build_dataclass(ModelASettings, model_a_raw, "model_a"),
+        crusher=crusher,
         folder_map=folder_map,
     )

@@ -16,10 +16,13 @@ dependencies = [
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
     "yt-dlp>=2024.1.0",
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
 model-a = ["opencv-python>=4.8", "pillow>=10.0"]
+# Local speech-to-text for the crusher when a video has no captions ($0 API spend).
+transcribe = ["faster-whisper>=1.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
@@ -31,4 +34,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-q"
+addopts = "-q -m 'not live'"
+markers = [
+    "live: opt-in network smoke tests (crusher example URLs)",
+]

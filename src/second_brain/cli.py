@@ -104,6 +104,24 @@ def cmd_model_a_enrich(settings: Settings, args) -> int:
     return 0
 
 
+def cmd_crush(settings: Settings, args) -> int:
+    from .crusher import CrushOptions, run_crush
+
+    opts = CrushOptions(
+        apply=args.apply,
+        limit=args.limit,
+        folder=args.folder,
+        url=args.url,
+        reprocess=args.reprocess,
+        write_children=not args.no_children,
+        max_spend=args.max_spend,
+    )
+    result = run_crush(settings, opts)
+    if result.stopped_reason:
+        logger.warning("Crush stopped early: %s", result.stopped_reason)
+    return 0
+
+
 def cmd_migrate_travel(settings: Settings, args) -> int:
     from .migrate_travel import run_migrate_travel
 
@@ -140,6 +158,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite Travel Hub.md / Travel Map.md even if they already exist",
     )
     p_travel.set_defaults(func=cmd_migrate_travel)
+    p_crush = sub.add_parser(
+        "crush",
+        help="Multimodal re-analysis of existing vault cards (default: dry-run + report)",
+    )
+    p_crush.add_argument("--apply", action="store_true", help="Rewrite vault cards from cached analysis")
+    p_crush.add_argument("--limit", type=int, help="Process at most N cards")
+    p_crush.add_argument("--folder", help="Only cards under this Resources subfolder (e.g. Travel)")
+    p_crush.add_argument("--url", help="Process a single normalized URL")
+    p_crush.add_argument("--reprocess", action="store_true", help="Ignore crusher state/cache for this run")
+    p_crush.add_argument("--no-children", action="store_true", help="Do not create child item notes")
+    p_crush.add_argument(
+        "--max-spend",
+        type=float,
+        help="Stop this run before Gemini spend exceeds N USD (overrides crusher.max_spend_usd)",
+    )
+    p_crush.set_defaults(func=cmd_crush)
     sub.add_parser("model-a-ingest", help="Experimental: per-URL tiered analysis (1-3 requests per URL)").set_defaults(func=cmd_model_a_ingest)
     sub.add_parser("model-a-enrich", help="Experimental: re-classify existing high-value cards").set_defaults(func=cmd_model_a_enrich)
     return parser

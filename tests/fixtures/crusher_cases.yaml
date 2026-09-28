@@ -1,0 +1,50 @@
+# Opt-in live smoke cases for `second-brain crush --url ...` / pytest -m live.
+# Replace placeholder URLs with real examples from your vault when available.
+#
+# Each case documents the edge case the crusher must handle; mocked unit tests
+# cover the same shapes without network access.
+
+cases:
+  - id: travel_slideshow_tiktok_photo
+    description: TikTok /photo/ post with a different destination on each slide
+    url: "https://www.tiktok.com/t/ZP8TvmKGk/"
+    expected_category: Travel
+    min_items: 2
+    item_kinds: [destination]
+
+  - id: travel_instagram_carousel
+    description: Instagram carousel (_type playlist) with multiple travel stops
+    url: "https://www.instagram.com/p/DV9asoNka6K/?img_index=8&stkn=MWtxZzljZTl2d2kweA=="
+    expected_category: Travel
+    min_items: 2
+    item_kinds: [destination]
+
+  - id: albums_spoken_no_captions
+    description: Creator lists favorite songs/albums in speech (Top 10 list)
+    url: "https://www.tiktok.com/t/ZP8TvQ4ww/"
+    expected_category: Saved Music
+    min_items: 3
+    item_kinds: [song]
+
+  - id: songs_on_screen_only
+    description: Song titles shown as on-screen text over music; little or no speech
+    url: "https://www.tiktok.com/t/ZP8Tv7oVv/"
+    expected_category: Saved Music
+    min_items: 3
+    item_kinds: [song]
+
+  - id: silent_visual_recipe
+    description: ASMR outdoor cooking; minimal/no narration (MenWithThePot)
+    url: "https://www.tiktok.com/@menwiththepot/video/7098047012339272966"
+    expected_category: Recipes & Food
+    min_items: 0
+
+  - id: misleading_caption
+    description: Creator niche/branding is Travel but clip is comedy prank (#comedy #prank)
+    url: "https://www.tiktok.com/@typischcalvin/video/7603433647399636246"
+    expected_category_not: Travel
+
+  - id: unavailable_deleted
+    description: Known deleted TikTok (Reddit r/WaybackMachine); URL should stay unavailable
+    url: "https://www.tiktok.com/@aez_707/video/7347927772125269281"
+    expect_unavailable: true

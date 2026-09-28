@@ -48,6 +48,30 @@ def test_example_config_loads_and_resolves_relative_paths():
     assert settings.clean_metadata_path.name == "clean_metadata.json"
 
 
+def test_crusher_inherits_gemini_model_and_extract_cookies(tmp_path):
+    settings = settings_from_dict(
+        {
+            "vault_path": "vault",
+            "gemini": {"model": "gemini-3.8-flash"},
+            "extract": {"cookies_from_browser": "edge"},
+        },
+        base_dir=tmp_path,
+    )
+    assert settings.crusher.model == "gemini-3.8-flash"
+    assert settings.crusher.cookies_from_browser == "edge"
+    overridden = settings_from_dict(
+        {
+            "vault_path": "vault",
+            "gemini": {"model": "gemini-3.8-flash"},
+            "extract": {"cookies_from_browser": "edge"},
+            "crusher": {"model": "gemini-3.6-flash", "cookies_from_browser": None},
+        },
+        base_dir=tmp_path,
+    )
+    assert overridden.crusher.model == "gemini-3.6-flash"
+    assert overridden.crusher.cookies_from_browser is None
+
+
 def test_ledger_defaults_to_hidden_folder_in_vault(tmp_path):
     settings = settings_from_dict({"vault_path": "vault"}, base_dir=tmp_path)
     assert settings.ledger_path == (tmp_path / "vault" / ".second-brain" / "url_ledger.jsonl").resolve()
