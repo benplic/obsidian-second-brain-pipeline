@@ -77,3 +77,10 @@ class CrusherAnalysis(BaseModel):
         description="False when current category is clearly correct despite sparse metadata.",
     )
     completeness_notes: str | None = None
+    needs_visuals: bool = Field(
+        default=False,
+        description="True when key content (list items, places, text) likely appears only on screen "
+        "and was not in the transcript or caption you were given.",
+    )
+    relevance: float | None = Field(default=None, description="Set by the classifier; leave null.")
+    content_tags: list[str] = Field(default_factory=list, description="Set by the classifier; leave empty.")

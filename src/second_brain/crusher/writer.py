@@ -117,10 +117,13 @@ def merge_frontmatter(
     tags = list(old_fm.get("tags") or [])
     if not isinstance(tags, list):
         tags = [str(tags)]
-    for tag in ("saved-media", category_tag(apply_category)):
+    # Classifier tags are namespaced so they never collide with the user's own tags.
+    for tag in ("saved-media", category_tag(apply_category), *(f"content/{t}" for t in analysis.content_tags)):
         if tag not in tags:
             tags.append(tag)
     merged["tags"] = tags
+    if analysis.relevance is not None:
+        merged["relevance"] = round(float(analysis.relevance), 2)
     return merged
 
 
