@@ -328,6 +328,9 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
             result.scanned = len(cards)
             logger.info("Crusher: %d card(s) queued (%s).", len(cards), "apply" if opts.apply else "dry-run")
 
+            # Once the quota or spend cap stops new Gemini calls, keep walking the
+            # queue so cards that already have a cached analysis still get written.
+            api_stopped = False
             for idx, card in enumerate(cards, 1):
                 url = card.url
                 if deps.state.should_skip(url, prompt_version=pv, reprocess=opts.reprocess):
@@ -337,12 +340,15 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
                     status = prior.status if prior else STATUS_DONE
                     if analysis is None:
                         continue
+                elif api_stopped:
+                    continue
                 else:
                     try:
                         analysis, status = _process_card(card, settings, opts, deps, result)
                     except _RUN_STOPPERS as exc:
                         result.stopped_reason = str(exc)
-                        break
+                        api_stopped = True
+                        continue
                     if analysis is None:
                         continue
 

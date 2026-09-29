@@ -595,9 +595,9 @@ def acquire_visuals(media: AcquiredMedia, settings: CrusherSettings, runner: YtD
     video = media.av_path if media.av_path and media.probe.has_video else None
     if video is None:
         height = int(settings.visual_video_max_height)
-        # Explicit low-res ladder only. Never fall through to yt-dlp's default
-        # (best) format: that is what blew storage in the old downloader.
-        fmt = f"worstvideo[height<={height}]/worst[height<={height}]/worst"
+        # Video-only ladder. A bare ``worst`` matches audio-only m4a, which
+        # ffmpeg then cannot turn into frames.
+        fmt = f"worstvideo[height<={height}][ext=mp4]/worstvideo[height<={height}]/worstvideo"
         runner.download(
             media.url,
             fmt=fmt,
@@ -626,7 +626,7 @@ def acquire_visuals(media: AcquiredMedia, settings: CrusherSettings, runner: YtD
         height = int(settings.visual_video_max_height)
         runner.download(
             media.url,
-            fmt=f"worstvideo[height<={height}]/worst[height<={height}]",
+            fmt=f"worstvideo[height<={height}][ext=mp4]/worstvideo[height<={height}]/worstvideo",
             output_template=str(media.tmp_path / "vis.%(ext)s"),
             max_filesize_mb=settings.max_download_mb,
         )
