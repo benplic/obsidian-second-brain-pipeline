@@ -74,7 +74,7 @@ class Classifier(Protocol):
 class SummarizerClassifier:
     """Fallback: the Gemini summary's own structured fields are the classification."""
 
-    name = "gemini"
+    name = "summarizer"
 
     def needs_visuals(self, state: str) -> float | None:
         return None

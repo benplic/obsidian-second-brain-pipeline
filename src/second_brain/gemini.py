@@ -15,6 +15,8 @@ from typing import Callable, TypeVar
 
 from google.genai import errors as genai_errors
 
+from .llm.types import QuotaExhaustedError, RateLimitError
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -105,6 +107,16 @@ def call_with_backoff(
     for attempt in range(max_retries):
         try:
             return func()
+        except QuotaExhaustedError as exc:
+            raise DailyQuotaExhaustedError(str(exc)) from exc
+        except RateLimitError as exc:
+            last_exc = exc
+            if attempt == max_retries - 1:
+                break
+            delay = backoff_delay(attempt, base_seconds, jitter, rng)
+            logger.warning("Rate limit hit (attempt %d/%d). Waiting %.1fs...", attempt + 1, max_retries, delay)
+            sleep(delay)
+            continue
         except genai_errors.APIError as exc:
             if not is_rate_limit_error(exc):
                 raise

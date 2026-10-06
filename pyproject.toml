@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Benjamin Plichta" }]
 dependencies = [
     "google-genai>=1.0",
+    "openai>=1.0",
     "pydantic>=2.5",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
