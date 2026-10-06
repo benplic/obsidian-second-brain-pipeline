@@ -11,22 +11,19 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypeVar
 
-from ..config import CrusherSettings
+from ..config import CrusherSettings, LlmSettings, Settings
 from ..gemini import DailyQuotaExhaustedError, MissingApiKeyError
+from ..llm.keys import discover_key_env_vars
+from ..llm.types import QuotaExhaustedError
 
 T = TypeVar("T")
-_NUMBERED_SUFFIX = re.compile(r"_(\d+)$")
-# A missing number ends the sequence, so a typo like GEMINI_API_KEY_4 with no
-# _3 cannot silently skip a key. 100 is a backstop, not a supported key count.
-_MAX_NUMBERED_KEYS = 100
 
 logger = logging.getLogger(__name__)
 
@@ -76,54 +73,16 @@ class KeyUsage:
     exhausted: bool = False
 
 
-def discover_key_env_vars(configured: tuple[str, ...], environ: Mapping[str, str] | None = None) -> list[str]:
-    """Ordered env-var names that hold a non-empty key.
-
-    ``("GEMINI_API_KEY",)`` plus ``GEMINI_API_KEY_2`` and ``GEMINI_API_KEY_3``
-    in the environment yields those three, in that order. The sequence for a
-    base name stops at the first missing number.
-    """
-    env = os.environ if environ is None else environ
-
-    def present(name: str) -> bool:
-        return bool((env.get(name) or "").strip())
-
-    ordered: list[str] = []
-    seen: set[str] = set()
-    seen_values: set[str] = set()
-
-    def add(name: str) -> None:
-        value = (env.get(name) or "").strip()
-        # The same secret under two names is one quota, not a fallback.
-        if not value or name in seen or value in seen_values:
-            return
-        seen.add(name)
-        seen_values.add(value)
-        ordered.append(name)
-
-    expanded_bases: set[str] = set()
-    for name in configured:
-        match = _NUMBERED_SUFFIX.search(name)
-        base = name[: match.start()] if match else name
-        if base in expanded_bases:
-            add(name)
-            continue
-        expanded_bases.add(base)
-        add(base)
-        number = 2
-        while present(f"{base}_{number}") and number <= _MAX_NUMBERED_KEYS:
-            add(f"{base}_{number}")
-            number += 1
-        # An explicitly configured name that is not in the numbered run (odd, but honored).
-        add(name)
-    return ordered
-
-
 class BudgetManager:
     """Tracks RPM/RPD/TPM and rotates API keys from the environment."""
 
-    def __init__(self, settings: CrusherSettings, usage_path: Path):
-        self.settings = settings
+    def __init__(self, settings: CrusherSettings | Settings, usage_path: Path):
+        if isinstance(settings, Settings):
+            self._llm: LlmSettings | None = settings.llm
+            self.settings = settings.crusher
+        else:
+            self._llm = None
+            self.settings = settings
         self.usage_path = Path(usage_path)
         # Per key, so falling over to the next key does not inherit this key's minute window.
         self._minute_requests: dict[str, list[float]] = {}
@@ -174,15 +133,20 @@ class BudgetManager:
             usage.exhausted = False
             usage.day_start_utc = _pacific_midnight_utc()
 
+    def _key_env_vars(self) -> tuple[str, ...]:
+        if self._llm is not None:
+            return self._llm.api_key_env_vars
+        return self.settings.api_key_env_vars
+
     def available_keys(self) -> list[str]:
-        return discover_key_env_vars(self.settings.api_key_env_vars)
+        return discover_key_env_vars(self._key_env_vars())
 
     def current_key_var(self) -> str:
         keys = self.available_keys()
         if not keys:
             raise MissingApiKeyError(
                 "No Gemini API keys found. Set one of: "
-                + ", ".join(self.settings.api_key_env_vars)
+                + ", ".join(self._key_env_vars())
             )
         for offset in range(len(keys)):
             idx = (self._key_index + offset) % len(keys)
@@ -224,10 +188,11 @@ class BudgetManager:
             var = self.current_key_var()
             try:
                 return call(var)
-            except DailyQuotaExhaustedError as exc:
+            except (DailyQuotaExhaustedError, QuotaExhaustedError) as exc:
                 self.mark_daily_exhausted(var)
                 remaining = self._ready_keys()
                 if not remaining:
+                    msg = str(exc)
                     raise DailyQuotaExhaustedError(
                         f"All {len(self.available_keys())} Gemini API keys are exhausted for today. "
                         "Re-run after midnight Pacific, or add another GEMINI_API_KEY_<n>."
@@ -289,15 +254,25 @@ class BudgetManager:
 
     # -- cost ledger --------------------------------------------------------
 
+    def _price_input_per_m(self) -> float | None:
+        if self._llm is not None and self._llm.price_input_per_m is not None:
+            return self._llm.price_input_per_m
+        return self.settings.price_input_per_m
+
+    def _price_output_per_m(self) -> float | None:
+        if self._llm is not None and self._llm.price_output_per_m is not None:
+            return self._llm.price_output_per_m
+        return self.settings.price_output_per_m
+
     def _prices_known(self) -> bool:
-        return self.settings.price_input_per_m is not None and self.settings.price_output_per_m is not None
+        return self._price_input_per_m() is not None and self._price_output_per_m() is not None
 
     def _gemini_usd(self, input_tokens: int, output_tokens: int) -> float:
         if not self._prices_known():
             return 0.0
         return (
-            input_tokens * float(self.settings.price_input_per_m)
-            + output_tokens * float(self.settings.price_output_per_m)
+            input_tokens * float(self._price_input_per_m())
+            + output_tokens * float(self._price_output_per_m())
         ) / 1_000_000
 
     def _add_usd(self, usd: float) -> None:

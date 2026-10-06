@@ -82,7 +82,9 @@ notepad .env                          # paste your Gemini key
 
 The distribution is named `obsidian-second-brain-pipeline`. The command it installs is `second-brain`, and the Python package it imports is `second_brain`.
 
-Get a free Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey). The key is read from `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), either as a real environment variable or from `.env`. Never put it in `config.yaml`.
+Get a free Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey). The key is read from `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), either as a real environment variable or from `.env`. Never put secrets in `config.yaml` (only env var **names** under `llm.api_key_env_vars`).
+
+**Choose your AI:** crush, categorize, and model-a share one `llm:` block (native Gemini or any OpenAI-compatible `base_url` + model id). Run `second-brain setup` for a wizard, or `second-brain doctor` to verify key, text, and vision. Omit `llm:` to keep the legacy defaults (`gemini.model` + crusher key rotation).
 
 PowerShell 5.1 has no `&&`. Chain commands with `;` plus `if ($?) { ... }`, or use `run_pipeline.bat`.
 
@@ -96,7 +98,8 @@ Everything machine-specific lives in `config.yaml`. See `config.example.yaml` fo
 | `pending_links_path` | The file your iOS Shortcut appends to, for example `G:/My Drive/Inbox/pending_links.txt`. |
 | `data_dir` | Where `clean_metadata.json` and `organized_tiktoks.csv` live (default `./data`, gitignored). |
 | `ledger_path` | Persistent URL ledger. Default: `<vault_path>/.second-brain/url_ledger.jsonl`, a hidden folder that Obsidian does not index, so the ledger syncs and backs up along with the vault. |
-| `gemini.*` | Model, batch size (100), retries, backoff base (8s), jitter, and pause between batches. |
+| `gemini.*` | Categorize batch size (100), retries, backoff, pause between batches (model id moves to `llm` when set). |
+| `llm.*` | Provider (`gemini` or `openai`), model, `api_key_env_vars`, vision/audio flags, prices for spend caps. |
 | `taxonomy` | Optional replacement for the default category-to-folder map. |
 
 Relative paths are resolved from the folder that contains `config.yaml`. Use `--config PATH` or `SECOND_BRAIN_CONFIG` to point somewhere else.

@@ -12,6 +12,7 @@ from second_brain.gemini import (
     call_with_backoff,
     is_rate_limit_error,
 )
+from second_brain.llm.types import RateLimitError
 
 from conftest import rate_limit_error
 
@@ -68,6 +69,21 @@ def test_daily_quota_stops_immediately():
     with pytest.raises(DailyQuotaExhaustedError):
         call_with_backoff(func, max_retries=5, base_seconds=1, sleep=sleeps.append)
     assert calls["n"] == 1 and sleeps == []
+
+
+def test_llm_rate_limit_error_is_retried():
+    sleeps: list[float] = []
+    calls = {"n": 0}
+
+    def func():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RateLimitError("rpm")
+        return "ok"
+
+    result = call_with_backoff(func, max_retries=3, base_seconds=1, sleep=sleeps.append, rng=lambda a, b: 0)
+    assert result == "ok"
+    assert calls["n"] == 2
 
 
 def test_rate_limit_detection():

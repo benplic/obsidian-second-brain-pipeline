@@ -18,6 +18,8 @@ from pydantic import ValidationError
 
 from ..config import CrusherSettings, Settings
 from ..gemini import DailyQuotaExhaustedError, MissingApiKeyError, RateLimitExhaustedError
+from ..llm.factory import build_runtime
+from ..llm.runtime import LlmRuntime
 from ..io_utils import atomic_write_text
 from ..urls import normalize_url
 from ..vault import iter_cards, parse_frontmatter_strict
@@ -90,6 +92,7 @@ class _Deps:
     cs: CrusherSettings
     state: CrusherState
     budget: BudgetManager
+    runtime: LlmRuntime
     runner: YtDlpRunner
     transcriber: WhisperTranscriber
     classifier: Classifier
@@ -145,7 +148,7 @@ def _escalate_visuals(media: AcquiredMedia, deps: _Deps, reasons: list[str]) -> 
 
 
 def _summarize_with_escalation(
-    media: AcquiredMedia, ctx: AnalyzeContext, deps: _Deps
+    media: AcquiredMedia, ctx: AnalyzeContext, deps: _Deps, settings: Settings
 ) -> tuple[CrusherAnalysis, int, bool]:
     """Return (analysis, passes, complete). Raises API/budget errors to the caller.
 
@@ -167,7 +170,7 @@ def _summarize_with_escalation(
     while passes < cs.max_passes:
         passes += 1
         ctx.pass_index = passes - 1
-        analysis = analyze_media(deps.budget, cs, media, ctx, deps.taxonomy)
+        analysis = analyze_media(deps.budget, deps.runtime, settings, media, ctx, deps.taxonomy)
         completeness = check_completeness(analysis, media)
         if passes >= cs.max_passes:
             complete = completeness.complete
@@ -231,7 +234,7 @@ def _process_card(card, settings: Settings, opts: CrushOptions, deps: _Deps, res
             subtitle_text=media.transcript_text,
         )
         try:
-            analysis, passes, complete = _summarize_with_escalation(media, ctx, deps)
+            analysis, passes, complete = _summarize_with_escalation(media, ctx, deps, settings)
         except (genai_errors.APIError, ValidationError, TimeoutError, RuntimeError) as exc:
             if isinstance(exc, _RUN_STOPPERS):
                 raise
@@ -268,14 +271,18 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
     settings.require_vault()
     ensure_ffmpeg()
 
+    app_settings = settings
     cs = settings.crusher
     if opts.max_spend is not None:
         cs = replace(cs, max_spend_usd=opts.max_spend)
-    budget = BudgetManager(cs, settings.second_brain_dir / "crusher_usage.json")
+        app_settings = replace(settings, crusher=cs)
+    budget = BudgetManager(app_settings, settings.second_brain_dir / "crusher_usage.json")
+    runtime = build_runtime(app_settings)
     deps = _Deps(
         cs=cs,
         state=CrusherState(settings.crusher_state_path, settings.crusher_cache_dir),
         budget=budget,
+        runtime=runtime,
         runner=YtDlpRunner(cs),
         transcriber=WhisperTranscriber(cs),
         classifier=build_classifier(cs, on_usage=budget.record_jev_usage),
@@ -301,7 +308,7 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
                         continue
                 else:
                     try:
-                        analysis, status = _process_card(card, settings, opts, deps, result)
+                        analysis, status = _process_card(card, app_settings, opts, deps, result)
                     except _RUN_STOPPERS as exc:
                         result.stopped_reason = str(exc)
                         break
