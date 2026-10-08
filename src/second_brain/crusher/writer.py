@@ -31,7 +31,9 @@ KIND_TO_CATEGORY = {
     "product": "Miscellaneous",
     "tool": "Tech & Coding",
     "workout": "Fitness & Health",
-    "tip": "Study Tips",
+    "health_tip": "Fitness & Health",
+    "study_tip": "Study Tips",
+    "tip": "Tips",
     "other": "Miscellaneous",
 }
 

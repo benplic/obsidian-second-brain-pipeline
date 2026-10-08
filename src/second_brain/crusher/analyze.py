@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from ..config import CrusherSettings
 from ..gemini import RateLimitExhaustedError, call_with_backoff
+from ..taxonomy import format_category_hints
 from .acquire import AcquiredMedia
 from .budget import BudgetManager
 from .schema import CrusherAnalysis
@@ -88,6 +89,7 @@ def build_prompt(
     return (
         "You analyze saved short-form videos for an Obsidian second brain.\n"
         f"Allowed categories (exact names): {taxonomy_keys}\n"
+        f"{format_category_hints(taxonomy_keys)}"
         f"Current card category: {ctx.current_category or 'unknown'}\n"
         f"Creator: {ctx.creator}\n"
         f"Platform caption/description: {ctx.caption}\n"
@@ -104,6 +106,8 @@ def build_prompt(
         "- Never invent items to fill a claimed count; report what you saw and set list_expected_count.\n"
         "- Keep original proper names; write summary and findings in English.\n"
         "- Set list_expected_count when the video claims a numbered list (e.g. top 10).\n"
+        "- For extracted tip items use kind health_tip (wellness/nutrition/sleep), "
+        "study_tip (learning/study), or tip (crafts/DIY/life hacks).\n"
         "- Set recategorize=false only when the current category is clearly correct.\n"
         + (
             "- You only have text. Set needs_visuals=true if key content (list items, places, products, "

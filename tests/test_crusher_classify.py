@@ -87,6 +87,15 @@ def test_classifier_gemini_forced_even_with_key(monkeypatch):
     assert isinstance(build_classifier(CrusherSettings(classifier="gemini")), SummarizerClassifier)
 
 
+def test_jev_category_criteria_use_taxonomy_hints(cs):
+    jev = JevClassifier(cs, "ts-test", sleep=lambda s: None)
+    taxonomy = ["Tips", "Study Tips", "Travel"]
+    criteria = jev.build_questions(taxonomy)["category"]["criteria"]
+    assert criteria["Travel"] == "Travel"
+    assert "life hacks" in criteria["Tips"]
+    assert "learning techniques" in criteria["Study Tips"]
+
+
 def test_jev_request_shape_and_parse(cs):
     usage: list[int] = []
     opener, requests = opener_returning(JEV_RESPONSE)

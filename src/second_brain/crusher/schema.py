@@ -32,6 +32,8 @@ ItemKind = Literal[
     "product",
     "tool",
     "workout",
+    "health_tip",
+    "study_tip",
     "tip",
     "other",
 ]

@@ -26,7 +26,7 @@ from pydantic import BaseModel, ValidationError
 from ..config import Settings
 from ..gemini import DailyQuotaExhaustedError, RateLimitExhaustedError, call_with_backoff, create_client
 from ..io_utils import append_csv_rows, atomic_write_json, read_csv_rows, read_json_list, remove_if_exists
-from ..taxonomy import DEFAULT_CATEGORY
+from ..taxonomy import DEFAULT_CATEGORY, format_category_hints
 from ..urls import normalize_url
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ def build_prompt(batch: list[dict], categories: list[str]) -> str:
     return (
         "Categorize each video into exactly one category from: "
         f"[{', '.join(categories)}]. Provide a 4-8 word summary for each.\n\n"
+        f"{format_category_hints(categories)}"
         f"Input Data:\n{json.dumps(payload)}"
     )
 

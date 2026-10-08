@@ -66,7 +66,7 @@ crusher:
   confidence_threshold: 0.55
   include_folders: []          # empty = all category folders under 3 - Resources
   skip_statuses: ["tossed"]
-  prompt_version: "2"          # bump to re-run summary/classification (downloads + transcripts are cached)
+  prompt_version: "3"          # bump to re-run summary/classification (downloads + transcripts are cached)
   geocoder: "nominatim"        # or "none"
   geocoder_user_agent: "obsidian-second-brain-pipeline/0.1"
   cookies_from_browser: null   # inherits extract.cookies_from_browser when omitted

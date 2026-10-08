@@ -101,7 +101,7 @@ class CrusherSettings:
     skip_statuses: tuple[str, ...] = ("tossed",)
     # "2" = tiered text/keyframe summarizer. Bumping re-runs only summary +
     # classification; cached metadata and transcripts are reused.
-    prompt_version: str = "2"
+    prompt_version: str = "3"
     geocoder: str = "nominatim"
     geocoder_user_agent: str = "obsidian-second-brain-pipeline/0.1"
     cookies_from_browser: str | None = None
