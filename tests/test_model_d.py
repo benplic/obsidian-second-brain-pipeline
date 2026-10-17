@@ -118,6 +118,31 @@ def test_repair_updates_previous_stock_and_leaves_edits(settings):
     assert hub in untouched.unchanged
 
 
+def test_repair_upgrades_a_model_c_generic_hub_and_leaves_a_scrapbook_line(settings):
+    from second_brain.model_c.hubs import generic_hub
+
+    resources = settings.resources_dir
+    folder = resources / "Comedy"
+    folder.mkdir()
+    hub = folder / "Comedy Hub.md"
+    stock = generic_hub("Comedy")
+    hub.write_text(stock, encoding="utf-8")
+
+    skipped = scaffold_hubs(resources, repair=False)
+    assert hub in skipped.unchanged
+    assert hub.read_text(encoding="utf-8") == stock
+
+    repaired = scaffold_hubs(resources, repair=True)
+    assert hub in repaired.repaired
+    assert hub.read_text(encoding="utf-8") == render_universal_hub("Comedy")
+
+    edited = stock + "\n- my theme\n"
+    hub.write_text(edited, encoding="utf-8")
+    again = scaffold_hubs(resources, repair=True)
+    assert hub not in again.repaired
+    assert hub.read_text(encoding="utf-8") == edited
+
+
 def test_collect_orders_manual_review_before_inbox_and_skips_tossed(settings):
     resources = settings.resources_dir
     _card(resources, "Comedy", "Already tossed", status="tossed")
@@ -282,6 +307,38 @@ def test_broken_frontmatter_delete_needs_confirmation_and_ledgers_the_url(settin
     assert run_triage(settings, ask=_script(["t", "d"])) == 0
     assert not path.exists()
     assert UrlLedger(settings.ledger_path).has_event("https://example.com/broken", EVENT_TOSSED)
+
+
+def test_broken_yaml_outside_manual_review_is_queued_but_not_rewritten(settings):
+    resources = settings.resources_dir
+    path = resources / "Comedy" / "Broken inbox.md"
+    path.parent.mkdir(parents=True)
+    original = '---\nurl: "https://example.com/comedy"\nstatus: "inbox"\ncategory: [oops\n---\n\n# Broken inbox\n'
+    path.write_text(original, encoding="utf-8")
+
+    queued = collect_candidates(resources)
+    assert [item.path for item in queued] == [path]
+    assert queued[0].fm is None
+
+    assert run_triage(settings, ask=_script(["k", "s"])) == 0
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_broken_yaml_with_a_terminal_status_stays_out_of_the_queue(settings):
+    resources = settings.resources_dir
+    holding = resources / "Inbox" / "Manual Review" / "Done.md"
+    holding.parent.mkdir(parents=True)
+    holding.write_text(
+        '---\nurl: "https://example.com/done"\nstatus: "tossed"\ncategory: [oops\n---\n\n# Done\n',
+        encoding="utf-8",
+    )
+    kept = resources / "Comedy" / "Kept.md"
+    kept.parent.mkdir(parents=True)
+    kept.write_text(
+        '---\nurl: "https://example.com/kept"\nstatus: "kept"\ncategory: [oops\n---\n\n# Kept\n',
+        encoding="utf-8",
+    )
+    assert collect_candidates(resources) == []
 
 
 def test_triage_skip_and_noninteractive_exit(settings, monkeypatch):
