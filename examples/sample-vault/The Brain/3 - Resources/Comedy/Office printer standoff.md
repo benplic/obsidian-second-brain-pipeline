@@ -5,7 +5,7 @@ url: "https://www.tiktok.com/@sample.creator.two/video/0000000000000000002"
 status: "tossed"
 tags:
   - saved-media
-  - category/comedy/funny
+  - category/comedy-funny
 ---
 
 # Office printer standoff

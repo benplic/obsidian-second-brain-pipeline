@@ -5,7 +5,7 @@ url: "https://www.instagram.com/reel/SAMPLE00001"
 status: "inbox"
 tags:
   - saved-media
-  - category/recipes-&-food
+  - category/recipes-and-food
 ---
 
 # 15 minute garlic noodles

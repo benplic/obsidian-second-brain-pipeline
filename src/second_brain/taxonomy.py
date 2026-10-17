@@ -48,21 +48,36 @@ def jev_category_criteria(taxonomy: list[str]) -> dict[str, str]:
     return {name: CATEGORY_HINTS.get(name, name) for name in taxonomy}
 
 
+# Labels written by an earlier Model C before categories were taxonomy keys.
+CATEGORY_ALIASES: dict[str, str] = {
+    "Music": "Saved Music",
+}
+
+
+def canonical_category(category: str) -> str:
+    """Map a legacy label onto a taxonomy key. Unknown names are unchanged."""
+    text = (category or "").strip()
+    return CATEGORY_ALIASES.get(text, text)
+
+
 def folder_for(category: str, folder_map: dict[str, str]) -> str:
     """Resolve a (possibly hallucinated) Gemini category to a vault folder.
 
     Unknown categories land in the Inbox rather than creating a new folder
     from model output, which also prevents path tricks in folder names.
+    ``Music`` is the legacy name for ``Saved Music`` and stays in the Music folder.
     """
-    return folder_map.get(category, DEFAULT_FOLDER)
+    key = canonical_category(category)
+    return folder_map.get(key, DEFAULT_FOLDER)
 
 
 def category_tag(category: str) -> str:
-    """Tag slug exactly as the original scripts produced it.
+    """Obsidian-legal tag. ``&`` becomes ``and`` and ``/`` becomes ``-``.
 
-    TODO: This yields tags like ``category/movies-&-shows`` and nested
-    ``category/art/organization/spaces``. Obsidian tags do not allow ``&``, so
-    some of these do not render as tags. Kept for compatibility with existing
-    cards and Dataview queries; changing it needs a one-time vault migration.
+    ``Recipes & Food`` -> ``category/recipes-and-food``.
+    ``Art/Organization/Spaces`` -> ``category/art-organization-spaces``.
+    ``second-brain migrate-cards`` rewrites slugs that used the old rules.
     """
-    return f"category/{category.lower().replace(' ', '-')}"
+    text = canonical_category(category).lower().replace("&", " and ").replace("/", " ")
+    slug = "-".join(part for part in text.replace("-", " ").split() if part)
+    return f"category/{slug or 'uncategorized'}"

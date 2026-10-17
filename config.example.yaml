@@ -60,12 +60,12 @@ model_a:
   backoff_base_seconds: 15
   confidence_threshold: 0.65
 
-# Music, Fitness, and Recipes. Separate queue so it does not pop Step 1 or Model A links.
-# `second-brain model-c-ingest`
+# Extraction confidence for Music, Fitness, and Recipes. The queue is pending_links_path.
+# model_c.inbox_path is no longer read; a non-empty legacy file is logged and left in place.
 model_c:
-  inbox_path: null             # default: <vault>/3 - Resources/Inbox/model_c_pending.txt
-  confidence_threshold: 0.60   # below this, or Other / Ambiguous, goes to Manual Review
-  sparse_text_chars: 45        # shorter title+caption+tags triggers the audio tier
+  inbox_path: null
+  confidence_threshold: 0.60   # below this, stage is manual-review
+  sparse_text_chars: 45
 
 # Tiered, budget-capped re-analysis of existing vault cards (`second-brain crush`).
 # Each URL escalates only as far as needed:

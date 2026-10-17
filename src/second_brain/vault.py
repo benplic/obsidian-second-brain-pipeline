@@ -99,6 +99,7 @@ DEFAULT_KEY_ORDER: tuple[str, ...] = (
     "creator",
     "url",
     "status",
+    "stage",
     "tags",
     "summary",
     "location",

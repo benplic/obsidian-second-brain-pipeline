@@ -153,7 +153,9 @@ def analyze_batch(runtime: LlmRuntime, settings: Settings, payload: list[dict]) 
 
 
 def format_tags(analysis: VideoAnalysis, category_label: str) -> str:
-    tags = ["second-brain", f"category/{category_label.lower().replace(' ', '-')}"]
+    from ..taxonomy import category_tag
+
+    tags = ["saved-media", category_tag(category_label)]
 
     def add(prefix: str, value: str | None) -> None:
         if value:
@@ -210,13 +212,13 @@ def apply_analysis(settings: Settings, ledger: UrlLedger, card: CardToEnrich, an
     is_movie = analysis.category == "Movies & Shows" and bool(analysis.extracted_movie_title)
     r = route(settings.resources_dir, analysis.category, analysis.confidence, analysis.needs_manual_review,
               settings.model_a.confidence_threshold, is_movie_with_title=is_movie)
-    title_source = analysis.extracted_movie_title if (is_movie and r.status == "To Watch") else analysis.summary
+    title_source = analysis.extracted_movie_title if (is_movie and r.stage == "to-watch") else analysis.summary
     final_title = sanitize_filename(title_source, max_len=75, fallback="Untitled")
     r.target_dir.mkdir(parents=True, exist_ok=True)
     new_path = r.target_dir / f"{final_title}.md"
 
     # Movies: several clips of one film collapse into a single note.
-    if is_movie and r.status == "To Watch" and new_path.exists() and new_path != card.path:
+    if is_movie and r.stage == "to-watch" and new_path.exists() and new_path != card.path:
         with open(new_path, "a", encoding="utf-8") as handle:
             handle.write(f"- Clip/Trailer: [{card.url}]({card.url}) - @{creator}\n")
             handle.flush()
@@ -230,13 +232,16 @@ def apply_analysis(settings: Settings, ledger: UrlLedger, card: CardToEnrich, an
 
     new_path = _target_path(r.target_dir, final_title, card.path)
     old_status = str(old_fm.get("status") or "")
-    status = old_status if old_status.lower() in HUMAN_STATUSES else r.status
+    human = old_status.lower() in HUMAN_STATUSES
+    status = old_status if human else "inbox"
+    stage = old_fm.get("stage") if human else r.stage
+    stage_line = f"stage: {yaml_str(stage)}\n" if stage else ""
     content = f"""---
 category: {yaml_str(r.category_label)}
 creator: {yaml_str(creator)}
 url: {yaml_str(card.url)}
 status: {yaml_str(status)}
-confidence: {analysis.confidence}
+{stage_line}confidence: {analysis.confidence}
 tags:
 {format_tags(analysis, r.category_label)}
 ---
@@ -254,7 +259,7 @@ tags:
     if new_path != card.path:
         card.path.unlink(missing_ok=True)
     logger.info("  -> Saved as %s [%s]", new_path.name, r.category_label)
-    if is_movie and r.status == "To Watch":
+    if is_movie and r.stage == "to-watch":
         add_to_kanban(settings.resources_dir, final_title)
     return "enriched"
 

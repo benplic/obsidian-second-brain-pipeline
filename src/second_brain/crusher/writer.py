@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..config import Settings
 from ..io_utils import atomic_write_text
-from ..taxonomy import category_tag, folder_for
+from ..taxonomy import canonical_category, category_tag, folder_for
 from ..vault import format_frontmatter, parse_frontmatter_strict, sanitize_filename, split_frontmatter
 from .schema import CrusherAnalysis, ExtractedItem
 
@@ -19,7 +19,12 @@ logger = logging.getLogger(__name__)
 
 CRUSHER_START = "<!-- crusher:start -->"
 CRUSHER_END = "<!-- crusher:end -->"
-_NOTES_HEADING_RE = re.compile(r"^## (Notes & Insights|Actionable Notes)\s*$", re.MULTILINE)
+# Model sections the crusher must not replace with an empty Notes block.
+_NOTES_HEADING_RE = re.compile(
+    r"^## (?:Notes & Insights|Actionable Notes|Exercises & Movement Routine|"
+    r"Ingredients & Preparation|Artist & Sound|Review)\s*$",
+    re.MULTILINE,
+)
 _HUMAN_STATUSES = {"kept", "promoted", "tossed"}
 
 KIND_TO_CATEGORY = {
@@ -208,7 +213,8 @@ def write_card_updates(
     old_category = str(old_fm.get("category") or "Miscellaneous")
     new_category = old_category
     if analysis.recategorize and not locked:
-        new_category = analysis.category if analysis.category in settings.folder_map else "Miscellaneous"
+        candidate = canonical_category(analysis.category)
+        new_category = candidate if candidate in settings.folder_map else "Miscellaneous"
 
     title = sanitize_filename(analysis.title or analysis.summary, max_len=75, fallback=card_path.stem)
     new_fm = merge_frontmatter(
