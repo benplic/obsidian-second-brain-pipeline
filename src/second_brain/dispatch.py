@@ -33,11 +33,14 @@ from .llm.factory import build_runtime
 from .llm.runtime import LlmRuntime
 from .llm.types import CompletionRequest, UnsupportedFeatureError
 from .model_a.common import MODEL_A_CATEGORIES
+from .model_b.geocode import geocode_place, safe_geocode
+from .model_b.ingest import analyze_travel
+from .model_b.schema import STAGE_MANUAL, TRAVEL, place_query, route_travel
 from .model_c.common import placement
 from .model_c.ingest import extract_keyframes, transcript_needs_vision
 from .model_c.schema import MODEL_C_CATEGORIES, ModelCExtraction
 from .model_c.hubs import ensure_hubs
-from .notes import render_manual, render_model_a, render_model_c
+from .notes import render_manual, render_model_a, render_model_b, render_model_c
 from .steps.categorize import run_categorize
 from .steps.extract_metadata import _rewrite_pending, run_extract
 from .steps.write_cards import run_write_cards
@@ -170,6 +173,7 @@ def _run_jev(
     runtime: LlmRuntime,
     classifier,
     acquire,
+    geocode,
 ) -> DispatchResult:
     result = DispatchResult()
     pending = settings.pending_links_path
@@ -247,6 +251,45 @@ def _run_jev(
                     sound=sound,
                 )
                 stem = meta.get("title") or extraction.summary
+            elif category == TRAVEL:
+                extraction = analyze_travel(runtime, settings, meta, url)
+                threshold = settings.model_b.confidence_threshold
+                query = place_query(extraction)
+                # Skip Nominatim unless the clip is confident travel with a place.
+                # A miss still files the card; it does not stay in the queue.
+                hit = None
+                if (
+                    extraction.is_travel_related
+                    and extraction.confidence >= threshold
+                    and query
+                    and settings.crusher.geocoder != "none"
+                ):
+                    hit = safe_geocode(geocode, query)
+                stage = route_travel(extraction, geocoded=hit is not None, threshold=threshold)
+                destination = " ".join((extraction.place_name or "").split()) or None
+                body = render_model_b(
+                    category=TRAVEL,
+                    title=meta.get("title") or extraction.summary,
+                    creator=meta.get("creator") or "Unknown",
+                    url=url,
+                    summary=extraction.summary,
+                    destination=destination,
+                    location_name=query if stage != STAGE_MANUAL else None,
+                    stage=stage,
+                    confidence=extraction.confidence,
+                    location=(hit.latitude, hit.longitude) if hit is not None and stage != STAGE_MANUAL else None,
+                    address=hit.address if hit is not None and stage != STAGE_MANUAL and hit.address else None,
+                )
+                stem = meta.get("title") or extraction.summary or destination or "Travel"
+                if stage == STAGE_MANUAL:
+                    target = settings.resources_dir / "Inbox" / "Manual Review"
+                else:
+                    target = settings.resources_dir / folder_for(TRAVEL, settings.folder_map)
+                write_card(target, sanitize_filename(stem, max_len=50, fallback="Saved Video"), body)
+                ledger.record(url, EVENT_CARDED, category=TRAVEL, source="dispatch")
+                known.add(url)
+                result.created += 1
+                continue
             elif category in MODEL_A_CATEGORIES:
                 where = placement(settings.resources_dir, settings.folder_map, category, usable=True)
                 summary = (meta.get("description") or meta.get("title") or "Saved video").strip()
@@ -322,6 +365,7 @@ def run_dispatch(
     *,
     acquire=None,
     classifier=None,
+    geocode=None,
 ) -> DispatchResult:
     """Pop ``pending_links.txt``. Holds the pipeline lock for the whole run."""
     settings.require_vault()
@@ -333,4 +377,6 @@ def run_dispatch(
             return _run_batched(settings)
         runtime = runtime or build_runtime(settings)
         fetch = acquire or (lambda url: acquire_metadata(settings, url))
-        return _run_jev(settings, runtime, chosen, fetch)
+        # Default binds settings so tests can inject a geocoder with no network.
+        locate = geocode or (lambda query: geocode_place(query, settings))
+        return _run_jev(settings, runtime, chosen, fetch, locate)

@@ -100,6 +100,18 @@ class ModelASettings:
 
 
 @dataclass(frozen=True)
+class ModelBSettings:
+    """Per-URL Travel ingest (``second-brain model-b-ingest``).
+
+    The queue is ``pending_links_path``. ``confidence_threshold`` is the floor
+    for a mapped or unmapped travel card. Below it, the clip is manual review.
+    """
+
+    confidence_threshold: float = 0.50
+    sparse_text_chars: int = 40
+
+
+@dataclass(frozen=True)
 class ModelCSettings:
     """Per-URL Music / Fitness / Recipes ingest (``second-brain model-c-ingest``).
 
@@ -231,6 +243,7 @@ class Settings:
     gemini: GeminiSettings = field(default_factory=GeminiSettings)
     llm: LlmSettings = field(default_factory=LlmSettings)
     model_a: ModelASettings = field(default_factory=ModelASettings)
+    model_b: ModelBSettings = field(default_factory=ModelBSettings)
     model_c: ModelCSettings = field(default_factory=ModelCSettings)
     crusher: CrusherSettings = field(default_factory=CrusherSettings)
     folder_map: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_FOLDER_MAP))
@@ -382,6 +395,12 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
     model_c_raw = dict(_section(raw, "model_c"))
     if "inbox_path" in model_c_raw:
         model_c_raw["inbox_path"] = _optional_path(base_dir, model_c_raw["inbox_path"], "model_c.inbox_path")
+    model_b = _build_dataclass(ModelBSettings, _section(raw, "model_b"), "model_b")
+    if not 0.0 <= model_b.confidence_threshold <= 1.0:
+        raise ConfigError("model_b.confidence_threshold must be between 0 and 1")
+    if model_b.sparse_text_chars < 1:
+        raise ConfigError("model_b.sparse_text_chars must be >= 1")
+
     model_c = _build_dataclass(ModelCSettings, model_c_raw, "model_c")
     if not 0.0 <= model_c.confidence_threshold <= 1.0:
         raise ConfigError("model_c.confidence_threshold must be between 0 and 1")
@@ -511,6 +530,7 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         gemini=gemini,
         llm=llm,
         model_a=_build_dataclass(ModelASettings, model_a_raw, "model_a"),
+        model_b=model_b,
         model_c=model_c,
         crusher=crusher,
         folder_map=folder_map,
