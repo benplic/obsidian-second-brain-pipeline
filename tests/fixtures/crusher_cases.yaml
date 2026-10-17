@@ -7,7 +7,7 @@
 cases:
   - id: travel_slideshow_tiktok_photo
     description: TikTok /photo/ post with a different destination on each slide
-    url: "https://www.tiktok.com/t/ZP8TvmKGk/"
+    url: " https://www.tiktokv.com/share/video/7639816971265002784"
     expected_category: Travel
     min_items: 2
     item_kinds: [destination]

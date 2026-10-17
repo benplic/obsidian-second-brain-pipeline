@@ -102,6 +102,28 @@ def test_call_rotating_raises_when_last_key_is_exhausted(tmp_path, monkeypatch):
         budget.call_rotating(call)
 
 
+def test_retest_clears_stale_exhausted_flag_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k1")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "k2")
+    budget = BudgetManager(CrusherSettings(api_key_env_vars=("GEMINI_API_KEY",), requests_per_day=20), tmp_path / "u.json")
+    budget.mark_daily_exhausted("GEMINI_API_KEY")
+    assert budget.retest_exhausted_keys() == ["GEMINI_API_KEY"]
+    assert budget.current_key_var() == "GEMINI_API_KEY"
+    # A second call in the same run does not clear a flag the retest just confirmed.
+    budget.mark_daily_exhausted("GEMINI_API_KEY")
+    assert budget.current_key_var() == "GEMINI_API_KEY_2"
+
+
+def test_retest_keeps_keys_that_hit_the_configured_daily_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k1")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "k2")
+    budget = BudgetManager(CrusherSettings(api_key_env_vars=("GEMINI_API_KEY",), requests_per_day=1), tmp_path / "u.json")
+    budget.record_request("GEMINI_API_KEY", tokens=10)
+    budget.mark_daily_exhausted("GEMINI_API_KEY")
+    assert budget.retest_exhausted_keys() == []
+    assert budget.current_key_var() == "GEMINI_API_KEY_2"
+
+
 def test_budget_raises_when_all_keys_exhausted(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "only")
     settings = CrusherSettings(api_key_env_vars=("GEMINI_API_KEY",), requests_per_day=1)
