@@ -4,3 +4,4 @@ pydantic>=2.5
 PyYAML>=6.0
 python-dotenv>=1.0
 yt-dlp>=2024.1.0
+geopy>=2.4

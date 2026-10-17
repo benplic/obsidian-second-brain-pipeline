@@ -67,6 +67,14 @@ model_c:
   confidence_threshold: 0.60   # below this, stage is manual-review
   sparse_text_chars: 45
 
+# Travel pins. The queue is pending_links_path (`second-brain model-b-ingest`).
+# confidence_threshold below 0.50, or a clip that is not travel, is manual-review.
+# sparse captions sample keyframes before audio. Coordinates use Nominatim
+# (crusher.geocoder / crusher.geocoder_user_agent). geocoder: none leaves the card unmapped.
+model_b:
+  confidence_threshold: 0.50
+  sparse_text_chars: 40
+
 # Tiered, budget-capped re-analysis of existing vault cards (`second-brain crush`).
 # Each URL escalates only as far as needed:
 #   captions (free) -> low-bitrate audio + local faster-whisper (free) -> <=512px keyframes (Gemini images)

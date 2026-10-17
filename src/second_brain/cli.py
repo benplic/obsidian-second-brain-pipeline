@@ -117,6 +117,15 @@ def cmd_model_c_ingest(settings: Settings, args) -> int:
     return 0
 
 
+def cmd_model_b_ingest(settings: Settings, args) -> int:
+    from .dispatch import run_dispatch
+
+    result = run_dispatch(settings)
+    if result.stopped_reason:
+        logger.warning("Model B ingest stopped early: %s", result.stopped_reason)
+    return 0
+
+
 def cmd_migrate_cards(settings: Settings, args) -> int:
     from .migrate_cards import run_migrate_cards
 
@@ -221,6 +230,10 @@ def build_parser() -> argparse.ArgumentParser:
         "model-c-ingest",
         help="Music, Fitness, and Recipes: tiered analysis into actionable notes",
     ).set_defaults(func=cmd_model_c_ingest)
+    sub.add_parser(
+        "model-b-ingest",
+        help="Travel: keyframes, audio fallback, and Nominatim pins",
+    ).set_defaults(func=cmd_model_b_ingest)
     sub.add_parser("setup", help="Interactive wizard: choose LLM provider and write llm: in config.yaml").set_defaults(func=cmd_setup)
     sub.add_parser("doctor", help="Verify API key, text call, and vision probe for configured LLM").set_defaults(func=cmd_doctor)
     return parser

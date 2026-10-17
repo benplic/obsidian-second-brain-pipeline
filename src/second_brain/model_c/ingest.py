@@ -45,8 +45,13 @@ def _downscale(image):
     return image
 
 
-def extract_keyframes(url: str, tmp_dir: str) -> list:
-    """Frames at 25%, 50%, and 75% of the smallest stream. Empty if OpenCV is missing."""
+def extract_keyframes(url: str, tmp_dir: str, fractions: tuple[float, ...] = KEYFRAME_FRACTIONS) -> list:
+    """Frames at ``fractions`` of the smallest stream. Empty if OpenCV is missing.
+
+    The default (25%, 50%, 75%) is the Model C sample. Travel passes its own
+    fractions so a slideshow's end card is included. Callers that omit the
+    argument keep the previous behavior.
+    """
     try:
         import cv2
         from PIL import Image
@@ -69,7 +74,7 @@ def extract_keyframes(url: str, tmp_dir: str) -> list:
         if total <= 0:
             return images
         seen: set[int] = set()
-        for fraction in KEYFRAME_FRACTIONS:
+        for fraction in fractions:
             frame_num = min(total - 1, max(0, int(total * fraction)))
             if frame_num in seen:
                 continue

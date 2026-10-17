@@ -60,6 +60,7 @@ src/second_brain/
   taxonomy.py                 Category -> folder map
   crusher/                    Multimodal re-analysis (`second-brain crush`)
   model_a/                    Experimental deep-analysis track (see below)
+  model_b/                    Travel pins: keyframes, audio fallback, Nominatim (see below)
   model_c/                    Music, Fitness, and Recipes actionable notes (see below)
 examples/sample-vault/        Fake vault: a few cards, a Comedy Hub, a Kanban board
 tests/                        pytest suite (Gemini is mocked, no network)
@@ -216,6 +217,18 @@ When `TYPESAFE_API_KEY` is set, each URL is fetched through the crusher's paced 
 
 `crush --apply` keeps Exercises, Ingredients, Artist & Sound, and Review sections along with Notes. Stock hubs are created for every taxonomy folder when missing. The Music hub lists unarchived tracks from the last 7 days (`stage` is not `archived`). Fitness and Recipes hubs list every note that is not tossed, so an older inbox card and a `stage: ready` card show up together. The keyframe tier needs `pip install -e .[model-a]`.
 
+## Model B (Travel)
+
+`model_b/` turns a clip already classified as Travel into a map pin. `second-brain run` and `second-brain model-b-ingest` both read `pending_links_path`. Tier 1 is the dispatcher's yt-dlp JSON metadata. A caption shorter than `model_b.sparse_text_chars` (default 40) samples keyframes at 25%, 55%, and 85% of the lowest-resolution mp4 before any audio call. If the clip is travel but still has no place name, it falls back to low-bitrate audio (`yt-dlp -x`) and one more Gemini call. A long caption skips the download.
+
+`status` stays `inbox` so triage and the Travel Hub keep working. The pin outcome is `stage`:
+
+- `mapped` — confidence at least `model_b.confidence_threshold` (default 0.50) and Nominatim returned coordinates. The card is under `3 - Resources/Travel/` with `location: [lat, lon]` and `address`.
+- `unmapped-travel` — travel is confirmed but geocoding missed, the place name was empty, or `crusher.geocoder` is `none`. Same folder, no `location` or `address`.
+- `manual-review` — confidence is below the threshold, or the extractor says the clip is not travel. The card goes to `Inbox/Manual Review`.
+
+Tags are `saved-media`, `category/travel`, and `travel/mapped`, `travel/unmapped`, or `travel/manual-review`. Nominatim is called through geopy's `RateLimiter` (1.1 seconds between requests) with `crusher.geocoder_user_agent`. A Gemini 429 still stops the run and leaves the URL in the queue. Without a Jev key, the mega-batch path writes the older travel stub and does not geocode.
+
 ## Development
 
 ```powershell
@@ -233,7 +246,7 @@ The tests cover frontmatter dedupe, queue pop-on-success and crash recovery, the
 
 ## Known limitations
 
-- `second-brain run` (and `model-a-ingest` / `model-c-ingest`, which call the same dispatcher) take `<vault>/.second-brain/pipeline.lock`. `second-brain crush` takes `crusher.lock` instead. `extract`, `categorize`, and `write-cards` do not take a lock; do not run those beside `run`.
+- `second-brain run` (and `model-a-ingest` / `model-b-ingest` / `model-c-ingest`, which call the same dispatcher) take `<vault>/.second-brain/pipeline.lock`. `second-brain crush` takes `crusher.lock` instead. `extract`, `categorize`, and `write-cards` do not take a lock; do not run those beside `run`.
 - TikTok short links (`vm.tiktok.com/...`) are not resolved to the canonical video URL, so a short link and a full link to the same video count as two URLs.
 - Tags such as `category/movies-&-shows` are kept for compatibility with existing vaults, even though Obsidian does not treat `&` as a valid tag character.
 
