@@ -60,6 +60,7 @@ src/second_brain/
   taxonomy.py                 Category -> folder map
   crusher/                    Multimodal re-analysis (`second-brain crush`)
   model_a/                    Experimental deep-analysis track (see below)
+  model_c/                    Music, Fitness, and Recipes actionable notes (see below)
 examples/sample-vault/        Fake vault: a few cards, a Comedy Hub, a Kanban board
 tests/                        pytest suite (Gemini is mocked, no network)
 ```
@@ -121,6 +122,7 @@ second-brain migrate-travel     # dry-run: backfill Travel Map View frontmatter
 second-brain migrate-travel --apply   # write Travel schema + ensure Hub/Map notes
 second-brain crush              # dry-run: multimodal re-analysis -> cache + report
 second-brain crush --apply      # rewrite cards from cache (recategorize, findings, children)
+second-brain model-c-ingest     # Music, Fitness, Recipes -> actionable notes
 second-brain -v <command>       # debug logging
 ```
 
@@ -203,6 +205,23 @@ on PATH for probing, keyframes, and slide detection (``-fps_mode`` needs ffmpeg 
 
 - `second-brain model-a-ingest` reads the vault's `3 - Resources/Inbox/pending_links.txt` and analyzes one URL at a time. It works in tiers: metadata first; if the caption is sparse, an audio transcript; if that is empty too, two keyframes. It routes videos into Tech & Coding, Project Ideas, or Movies & Shows, and sends low-confidence ones to `Inbox/Manual Review`. This costs 1 to 3 Gemini requests per URL, so it does not fit the free tier for bulk use. The keyframe tier needs `pip install -e .[model-a]`.
 - `second-brain model-a-enrich` re-classifies existing cards in those folders, 10 per request. It adds criteria tags (genre, tool, project time), renames files, and adds movies to `!Watchlist Kanban.md`. Your notes section and triage status are preserved.
+
+## Model C (Music, Fitness, Recipes)
+
+`model_c/` is another per-URL track, also outside `run_pipeline.bat`. It does not replace Steps 1-3.
+
+`second-brain model-c-ingest` reads `<vault>/3 - Resources/Inbox/model_c_pending.txt` (override with `model_c.inbox_path`). That file is separate from `pending_links.txt` and from Model A's inbox, so the three consumers do not pop each other's URLs.
+
+Tiers match Model A, with Model C thresholds: metadata first (`yt-dlp --dump-json`); if the title, caption, and tags are shorter than 45 characters, a low-bitrate audio transcript; if that transcript is empty, under 20 characters, or only describes instrumental music, three keyframes (25%, 50%, 75%, longest side 512px). The structured response is category, summary, actionable items, confidence, and a manual-review flag. Artist and track from yt-dlp fill blank music fields.
+
+Routing:
+
+- Music notes use `status: inbox`, with an Artist & Sound section. The Music Hub lists unarchived tracks from the last 7 days (curator, sound, link) so you can move them to a playlist.
+- Fitness & Health notes use `status: ready` and an Exercises & Movement Routine checklist.
+- Recipes & Food notes use `status: ready` and an Ingredients & Preparation checklist.
+- Confidence below 0.60, `Other / Ambiguous`, or a dead link goes to `Inbox/Manual Review` with `status: manual-review`. Dead links do not call the model.
+
+Hub files are created under those folders only when missing. The keyframe tier needs `pip install -e .[model-a]`.
 
 ## Development
 

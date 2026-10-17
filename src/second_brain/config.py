@@ -99,6 +99,19 @@ class ModelASettings:
 
 
 @dataclass(frozen=True)
+class ModelCSettings:
+    """Per-URL Music / Fitness / Recipes ingest (``second-brain model-c-ingest``).
+
+    The queue is separate from ``pending_links_path`` and from Model A's inbox
+    so the three consumers do not pop each other's URLs.
+    """
+
+    inbox_path: Path | None = None
+    confidence_threshold: float = 0.60
+    sparse_text_chars: int = 45
+
+
+@dataclass(frozen=True)
 class CrusherSettings:
     """Multimodal re-analysis of existing vault cards (``second-brain crush``).
 
@@ -217,6 +230,7 @@ class Settings:
     gemini: GeminiSettings = field(default_factory=GeminiSettings)
     llm: LlmSettings = field(default_factory=LlmSettings)
     model_a: ModelASettings = field(default_factory=ModelASettings)
+    model_c: ModelCSettings = field(default_factory=ModelCSettings)
     crusher: CrusherSettings = field(default_factory=CrusherSettings)
     folder_map: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_FOLDER_MAP))
 
@@ -242,6 +256,10 @@ class Settings:
     def model_a_inbox_path(self) -> Path:
         # Original Model A read its queue from inside the vault Inbox folder.
         return self.model_a.inbox_path or (self.resources_dir / "Inbox" / "pending_links.txt")
+
+    @property
+    def model_c_inbox_path(self) -> Path:
+        return self.model_c.inbox_path or (self.resources_dir / "Inbox" / "model_c_pending.txt")
 
     @property
     def second_brain_dir(self) -> Path:
@@ -354,6 +372,15 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
     for key in ("inbox_path", "metadata_snapshot_path"):
         if key in model_a_raw:
             model_a_raw[key] = _optional_path(base_dir, model_a_raw[key], f"model_a.{key}")
+
+    model_c_raw = dict(_section(raw, "model_c"))
+    if "inbox_path" in model_c_raw:
+        model_c_raw["inbox_path"] = _optional_path(base_dir, model_c_raw["inbox_path"], "model_c.inbox_path")
+    model_c = _build_dataclass(ModelCSettings, model_c_raw, "model_c")
+    if not 0.0 <= model_c.confidence_threshold <= 1.0:
+        raise ConfigError("model_c.confidence_threshold must be between 0 and 1")
+    if model_c.sparse_text_chars < 1:
+        raise ConfigError("model_c.sparse_text_chars must be >= 1")
 
     folder_map = dict(DEFAULT_FOLDER_MAP)
     taxonomy_raw = raw.get("taxonomy")
@@ -478,6 +505,7 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         gemini=gemini,
         llm=llm,
         model_a=_build_dataclass(ModelASettings, model_a_raw, "model_a"),
+        model_c=model_c,
         crusher=crusher,
         folder_map=folder_map,
     )

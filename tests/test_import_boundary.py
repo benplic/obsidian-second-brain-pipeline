@@ -11,6 +11,7 @@ HOT_PATHS = [
     REPO / "src/second_brain/steps/categorize.py",
     REPO / "src/second_brain/model_a/ingest.py",
     REPO / "src/second_brain/model_a/enrich.py",
+    REPO / "src/second_brain/model_c/ingest.py",
 ]
 
 
