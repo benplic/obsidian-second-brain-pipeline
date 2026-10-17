@@ -229,6 +229,16 @@ When `TYPESAFE_API_KEY` is set, each URL is fetched through the crusher's paced 
 
 Tags are `saved-media`, `category/travel`, and `travel/mapped`, `travel/unmapped`, or `travel/manual-review`. Nominatim is called through geopy's `RateLimiter` (1.1 seconds between requests) with `crusher.geocoder_user_agent`. A Gemini 429 still stops the run and leaves the URL in the queue. Without a Jev key, the mega-batch path writes the older travel stub and does not geocode.
 
+## Model D (universal hubs and triage)
+
+`model_d/` is the catch-all for resource folders that do not belong to Model B or Model C: Art & Spaces, Relationships, Comedy, and any folder you add later under `3 - Resources/`.
+
+`second-brain model-d --scaffold` walks the direct children of `3 - Resources/`. It skips `Inbox`, dot-folders, and the model-owned folders `Music`, `Fitness & Health`, `Recipes & Food`, and `Travel`. When `<Folder Name> Hub.md` is missing, it writes the 3-part hub: a Dataview inspiration stream (hides `status: tossed`, `status: manual-review`, and `stage: manual-review`), a Synthesis & Scrapbook section, and a triage checklist, plus a collapsed callout for notes still marked manual-review. An existing hub is never overwritten. `--scaffold --repair` refreshes a hub only when its text still equals the previous stock template, so a hand-edited scrapbook stays put.
+
+`second-brain model-d --triage` lists notes in `Inbox/Manual Review` and any note whose `status` is `inbox` or `manual-review`, or whose `stage` is `manual-review`. Notes already `kept`, `promoted`, or `tossed` are skipped, including ones left in the holding folder. Keys are `k` keep, `m` move (one folder name under Resources; the taxonomy key and `category/` tag are updated), `p` promote (into `1 - Projects/<Project Name>/` with `status: promoted`), `t` toss (hides the note; a second confirmation is required to delete it), `s` skip, and `q` quit. Keep, move, promote, and toss clear `stage: manual-review` and leave other stages alone. Keep of a holding-folder note files it with `folder_for` (so `Comedy/Funny` lands in `Comedy`). The note body is not rewritten. A move writes the new file and only then deletes the original. If the destination name is taken, the new file gets a `(2)` suffix. Deleting records the URL in the ledger first, using the lenient URL parse when the YAML block is broken. Folder and project names are a single path segment, so triage input cannot write outside the vault.
+
+The same hub layout is in `templates/Universal Category Hub.md` for Templater. Create the note inside the category folder, then insert the template so `tp.file.folder(true)` becomes that folder's vault path.
+
 ## Development
 
 ```powershell
@@ -253,9 +263,9 @@ The tests cover frontmatter dedupe, queue pop-on-success and crash recovery, the
 ## Roadmap
 
 - `second-brain migrate-cards` rewrites illegal category tags, maps `second-brain` to `saved-media`, moves `To Watch` / `manual-review` / `ready` / `archived` into `stage`, and refreshes stock hubs that still match a previous template. It does not yet re-normalize stored `url:` values.
-- Hub scaffolding: create a `<Category> Hub.md` with Dataview queries whenever a new category folder appears.
+- Hub scaffolding for Music, Fitness, Recipes, and Travel stays with those models. `second-brain model-d --scaffold` creates a `<Category> Hub.md` for every other direct child of `3 - Resources/` when the hub is missing.
 - Mobile capture: finish the iOS Shortcut that writes to a Drive or iCloud `pending_links.txt`.
-- Promotion command: one Obsidian action that sets `status: promoted` and moves the card to `1 - Projects/`.
+- Obsidian promotion action: Model D's terminal triage already sets `status: promoted` and moves the card to `1 - Projects/`. A one-click command inside Obsidian is still open.
 
 ## License
 
