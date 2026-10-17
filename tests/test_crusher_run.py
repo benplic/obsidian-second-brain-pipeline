@@ -128,7 +128,7 @@ def test_apply_writes_cached_cards_after_quota_stop(crush_settings, monkeypatch)
 
     monkeypatch.setattr("second_brain.crusher.run.acquire_text", lambda u, cfg, runner, **kw: _text_media(u))
 
-    def capped(budget, cfg, media, ctx, taxonomy):
+    def capped(budget, runtime, app_settings, media, ctx, taxonomy):
         raise SpendCapReachedError("cap")
 
     monkeypatch.setattr("second_brain.crusher.run.analyze_media", capped)
