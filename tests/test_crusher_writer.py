@@ -19,6 +19,30 @@ def test_item_category_routes_tip_kinds():
     assert item_category(ExtractedItem(kind="tip", name="Hot glue fix"), "Study Tips") == "Tips"
 
 
+def test_writer_keeps_fitness_checklist(settings):
+    card = make_card(settings.resources_dir, "Music", "routine", "https://example.com/fit")
+    card.write_text(
+        '---\ncategory: "Music"\ncreator: "c"\nurl: "https://example.com/fit"\nstatus: "inbox"\n---\n\n'
+        "# routine\n\n## Exercises & Movement Routine\n- [ ] Squat 3x10\n",
+        encoding="utf-8",
+    )
+    analysis = CrusherAnalysis(
+        category="Music",
+        confidence=0.9,
+        title="routine",
+        summary="Still a song-shaped card",
+        findings=["On-screen move names"],
+        recategorize=True,
+    )
+    outcome = write_card_updates(
+        settings, card, analysis, prompt_version="1", crusher_status="done", write_children=False,
+    )
+    text = outcome.parent_path.read_text(encoding="utf-8")
+    assert "- [ ] Squat 3x10" in text
+    assert outcome.parent_path.parent.name == "Music"
+    assert 'category: "Saved Music"' in text or "Saved Music" in text
+
+
 def test_writer_preserves_notes_and_adds_findings(settings):
     card = make_card(
         settings.resources_dir,

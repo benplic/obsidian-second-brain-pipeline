@@ -71,11 +71,13 @@ def cmd_write_cards(settings: Settings, args) -> int:
 
 
 def cmd_run(settings: Settings, args) -> int:
-    for step in (cmd_extract, cmd_categorize, cmd_write_cards):
-        code = step(settings, args)
-        if code:
-            return code
-    logger.info("Pipeline completed.")
+    from .dispatch import run_dispatch
+
+    result = run_dispatch(settings)
+    if result.stopped_reason:
+        logger.warning("Run stopped early: %s", result.stopped_reason)
+    else:
+        logger.info("Pipeline completed. Created %d card(s), skipped %d known.", result.created, result.skipped_known)
     return 0
 
 
@@ -91,9 +93,11 @@ def cmd_ledger_sync(settings: Settings, args) -> int:
 
 
 def cmd_model_a_ingest(settings: Settings, args) -> int:
-    from .model_a.ingest import run_ingest
+    from .dispatch import run_dispatch
 
-    run_ingest(settings)
+    result = run_dispatch(settings)
+    if result.stopped_reason:
+        logger.warning("Ingest stopped early: %s", result.stopped_reason)
     return 0
 
 
@@ -105,11 +109,18 @@ def cmd_model_a_enrich(settings: Settings, args) -> int:
 
 
 def cmd_model_c_ingest(settings: Settings, args) -> int:
-    from .model_c.ingest import run_ingest
+    from .dispatch import run_dispatch
 
-    result = run_ingest(settings)
+    result = run_dispatch(settings)
     if result.stopped_reason:
         logger.warning("Model C ingest stopped early: %s", result.stopped_reason)
+    return 0
+
+
+def cmd_migrate_cards(settings: Settings, args) -> int:
+    from .migrate_cards import run_migrate_cards
+
+    run_migrate_cards(settings, apply=args.apply)
     return 0
 
 
@@ -162,7 +173,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_ig.set_defaults(func=cmd_parse_instagram)
     sub.add_parser("categorize", help="Step 2: clean_metadata.json -> organized_tiktoks.csv (Gemini)").set_defaults(func=cmd_categorize)
     sub.add_parser("write-cards", help="Step 3: organized_tiktoks.csv -> vault cards").set_defaults(func=cmd_write_cards)
-    sub.add_parser("run", help="Steps 1-3 in order").set_defaults(func=cmd_run)
+    sub.add_parser(
+        "run",
+        help="Enrich pending_links.txt, classify, and write cards (pipeline lock)",
+    ).set_defaults(func=cmd_run)
     sub.add_parser("ledger-sync", help="Record vault URLs and tossed cards in the URL ledger").set_defaults(func=cmd_ledger_sync)
     p_travel = sub.add_parser(
         "migrate-travel",
@@ -179,6 +193,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite Travel Hub.md / Travel Map.md even if they already exist",
     )
     p_travel.set_defaults(func=cmd_migrate_travel)
+    p_cards = sub.add_parser(
+        "migrate-cards",
+        help="Dry-run: move legacy status words to stage and legalize category tags",
+    )
+    p_cards.add_argument("--apply", action="store_true", help="Write changes (default is dry-run)")
+    p_cards.set_defaults(func=cmd_migrate_cards)
     p_crush = sub.add_parser(
         "crush",
         help="Multimodal re-analysis of existing vault cards (default: dry-run + report)",

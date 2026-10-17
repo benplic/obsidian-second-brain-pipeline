@@ -5,7 +5,7 @@ url: "https://www.tiktok.com/@sample.dev/video/0000000000000000003"
 status: "promoted"
 tags:
   - saved-media
-  - category/tech-&-coding
+  - category/tech-and-coding
 ---
 
 # Python one-liner for deduping lists

@@ -5,7 +5,7 @@ url: "https://www.tiktok.com/@sample.creator.one/video/0000000000000000001"
 status: "kept"
 tags:
   - saved-media
-  - category/comedy/funny
+  - category/comedy-funny
 ---
 
 # Cat judges a cooking show

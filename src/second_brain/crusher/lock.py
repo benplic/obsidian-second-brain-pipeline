@@ -17,9 +17,10 @@ class CrusherLockError(RuntimeError):
 
 
 class CrusherLock:
-    def __init__(self, path: Path, *, stale_hours: float):
+    def __init__(self, path: Path, *, stale_hours: float, kind: str = "crusher"):
         self.path = Path(path)
         self.stale_hours = stale_hours
+        self.kind = kind
         self._held = False
 
     def __enter__(self) -> CrusherLock:
@@ -38,10 +39,10 @@ class CrusherLock:
                 age_hours = 0.0
             if age_hours < self.stale_hours:
                 raise CrusherLockError(
-                    f"Another crusher run may be active (lock: {self.path}). "
+                    f"Another {self.kind} run may be active (lock: {self.path}). "
                     f"Delete the lock if the prior run crashed."
                 )
-            logger.warning("Removing stale crusher lock (%.1fh old).", age_hours)
+            logger.warning("Removing stale %s lock (%.1fh old).", self.kind, age_hours)
             self.path.unlink(missing_ok=True)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(self.path, f"pid={os.getpid()}\n")

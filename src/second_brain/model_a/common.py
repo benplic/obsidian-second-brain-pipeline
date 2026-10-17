@@ -18,21 +18,19 @@ HUMAN_STATUSES = {"kept", "promoted", "tossed"}
 @dataclass(frozen=True)
 class Route:
     target_dir: Path
-    status: str
+    stage: str | None
     category_label: str
 
 
 def route(resources_dir: Path, category: str, confidence: float, needs_manual_review: bool, threshold: float,
           *, is_movie_with_title: bool = True) -> Route:
-    """Decide folder/status. Low confidence or ambiguity -> Manual Review.
+    """Folder and stage for a category that was already chosen.
 
-    TODO: "To Watch" and "manual-review" are outside the documented status set
-    (inbox | kept | promoted | tossed). Kept for compatibility with the Movies
-    Kanban and existing notes; decide whether Kanban column should live in a
-    separate field instead.
+    ``status`` is not decided here. New cards stay ``inbox``; movies record
+    ``stage: to-watch`` so the Kanban column is not a triage status.
     """
     if needs_manual_review or confidence < threshold or category == "Other / Ambiguous":
-        return Route(resources_dir / MANUAL_REVIEW_SUBPATH, "manual-review", "Ambiguous")
+        return Route(resources_dir / MANUAL_REVIEW_SUBPATH, "manual-review", "Miscellaneous")
     if category == "Movies & Shows" and is_movie_with_title:
-        return Route(resources_dir / "Movies & Shows", "To Watch", "Movies & Shows")
-    return Route(resources_dir / category, "inbox", category)
+        return Route(resources_dir / "Movies & Shows", "to-watch", "Movies & Shows")
+    return Route(resources_dir / category, None, category)

@@ -115,14 +115,16 @@ Or run commands individually:
 second-brain extract            # Step 1
 second-brain categorize         # Step 2 (uses Gemini)
 second-brain write-cards        # Step 3
-second-brain run                # 1 -> 2 -> 3
+second-brain run                # pending_links.txt -> classify -> cards (pipeline lock)
 second-brain parse-instagram    # one-off: import a Meta "saved items" export instead of Step 1
 second-brain ledger-sync        # record vault URLs + tossed cards in the ledger
 second-brain migrate-travel     # dry-run: backfill Travel Map View frontmatter
 second-brain migrate-travel --apply   # write Travel schema + ensure Hub/Map notes
 second-brain crush              # dry-run: multimodal re-analysis -> cache + report
 second-brain crush --apply      # rewrite cards from cache (recategorize, findings, children)
-second-brain model-c-ingest     # Music, Fitness, Recipes -> actionable notes
+second-brain model-c-ingest     # same queue as run; Music, Fitness, Recipes get checklists
+second-brain migrate-cards      # dry-run: legacy status -> stage, legalize tags
+second-brain migrate-cards --apply
 second-brain -v <command>       # debug logging
 ```
 
@@ -140,7 +142,7 @@ Exit codes: `0` means done, including a Gemini run that stopped early with its q
 
 ### Triage and deleting cards
 
-Cards are created with `status: "inbox"`. Set `status` to `kept`, `promoted`, or `tossed` as you triage. Every card the pipeline writes is recorded in the ledger. For cards that existed before you started using the ledger, run `second-brain ledger-sync` once before deleting anything. Step 1 also runs this sync automatically on each run.
+Cards are created with `status: "inbox"`. Set `status` to `kept`, `promoted`, or `tossed` as you triage. Pipeline state is a separate `stage` field: `ready` (fitness and recipes), `to-watch` (movies), `manual-review`, or `archived` (you set this after moving a track to a playlist). Every card the pipeline writes is recorded in the ledger. For cards that existed before you started using the ledger, run `second-brain ledger-sync` once before deleting anything. Step 1 also runs this sync automatically on each run. `second-brain migrate-cards` (dry-run; add `--apply` to write) moves older `ready` / `To Watch` / `manual-review` / `archived` values out of `status` into `stage`.
 
 ### Try it with the sample vault
 
@@ -203,25 +205,16 @@ on PATH for probing, keyframes, and slide detection (``-fps_mode`` needs ffmpeg 
 
 `model_a/` holds a deeper-analysis track, which is not part of the `.bat` file:
 
-- `second-brain model-a-ingest` reads the vault's `3 - Resources/Inbox/pending_links.txt` and analyzes one URL at a time. It works in tiers: metadata first; if the caption is sparse, an audio transcript; if that is empty too, two keyframes. It routes videos into Tech & Coding, Project Ideas, or Movies & Shows, and sends low-confidence ones to `Inbox/Manual Review`. This costs 1 to 3 Gemini requests per URL, so it does not fit the free tier for bulk use. The keyframe tier needs `pip install -e .[model-a]`.
+- `second-brain model-a-ingest` is the same dispatcher as `second-brain run`. It reads `pending_links_path` only. Tech & Coding, Project Ideas, and Movies & Shows are transformed after classification. Movies get `stage: to-watch` and stay `status: inbox`. A non-empty legacy Model A inbox is logged and left in place.
 - `second-brain model-a-enrich` re-classifies existing cards in those folders, 10 per request. It adds criteria tags (genre, tool, project time), renames files, and adds movies to `!Watchlist Kanban.md`. Your notes section and triage status are preserved.
 
 ## Model C (Music, Fitness, Recipes)
 
-`model_c/` is another per-URL track, also outside `run_pipeline.bat`. It does not replace Steps 1-3.
+`model_c/` turns Saved Music, Fitness & Health, and Recipes & Food into usable notes after something else has classified them. `second-brain run` and `second-brain model-c-ingest` both read `pending_links_path`. A leftover `model_c_pending.txt` is logged and not popped.
 
-`second-brain model-c-ingest` reads `<vault>/3 - Resources/Inbox/model_c_pending.txt` (override with `model_c.inbox_path`). That file is separate from `pending_links.txt` and from Model A's inbox, so the three consumers do not pop each other's URLs.
+When `TYPESAFE_API_KEY` is set, each URL is fetched through the crusher's paced yt-dlp runner and classified with Jev. Otherwise the Gemini mega-batch supplies the category. The extraction schema has no category field. Songs are filed as `Saved Music` in the Music folder (`status: inbox`, artist and sound). Fitness and recipes get checkbox sections and `stage: ready`. Extraction confidence below 0.60, low Jev confidence, a dead link, or an unparseable response is `stage: manual-review` under `Inbox/Manual Review`. A timeout or HTTP 429 stays in the queue and is not ledgered. A Gemini 429 still stops the run.
 
-Tiers match Model A, with Model C thresholds: metadata first (`yt-dlp --dump-json`); if the title, caption, and tags are shorter than 45 characters, a low-bitrate audio transcript; if that transcript is empty, under 20 characters, or only describes instrumental music, three keyframes (25%, 50%, 75%, longest side 512px). The structured response is category, summary, actionable items, confidence, and a manual-review flag. Artist and track from yt-dlp fill blank music fields.
-
-Routing:
-
-- Music notes use `status: inbox`, with an Artist & Sound section. The Music Hub lists unarchived tracks from the last 7 days (curator, sound, link) so you can move them to a playlist.
-- Fitness & Health notes use `status: ready` and an Exercises & Movement Routine checklist.
-- Recipes & Food notes use `status: ready` and an Ingredients & Preparation checklist.
-- Confidence below 0.60, `Other / Ambiguous`, or a dead link goes to `Inbox/Manual Review` with `status: manual-review`. Dead links do not call the model.
-
-Hub files are created under those folders only when missing. The keyframe tier needs `pip install -e .[model-a]`.
+`crush --apply` keeps Exercises, Ingredients, Artist & Sound, and Review sections along with Notes. Stock hubs are created for every taxonomy folder when missing. The Music hub lists unarchived tracks from the last 7 days (`stage` is not `archived`). Fitness and Recipes hubs list every note that is not tossed, so an older inbox card and a `stage: ready` card show up together. The keyframe tier needs `pip install -e .[model-a]`.
 
 ## Development
 
@@ -240,19 +233,13 @@ The tests cover frontmatter dedupe, queue pop-on-success and crash recovery, the
 
 ## Known limitations
 
-- Only one copy of the pipeline should run at a time. There is no lock file.
+- `second-brain run` (and `model-a-ingest` / `model-c-ingest`, which call the same dispatcher) take `<vault>/.second-brain/pipeline.lock`. `second-brain crush` takes `crusher.lock` instead. `extract`, `categorize`, and `write-cards` do not take a lock; do not run those beside `run`.
 - TikTok short links (`vm.tiktok.com/...`) are not resolved to the canonical video URL, so a short link and a full link to the same video count as two URLs.
 - Tags such as `category/movies-&-shows` are kept for compatibility with existing vaults, even though Obsidian does not treat `&` as a valid tag character.
 
 ## Roadmap
 
-- TODO: Legacy card migration. Write a one-time, dry-run-first script that:
-  - rewrites tag slugs that Obsidian rejects (`category/movies-&-shows`, nested `category/art/organization/spaces`);
-  - unifies Model A's `second-brain` tag with `saved-media`;
-  - moves Model A's `To Watch` / `manual-review` statuses into a separate field, so `status` stays within `inbox | kept | promoted | tossed`;
-  - re-normalizes stored `url:` values.
-
-  Update the Dataview hubs at the same time.
+- `second-brain migrate-cards` rewrites illegal category tags, maps `second-brain` to `saved-media`, moves `To Watch` / `manual-review` / `ready` / `archived` into `stage`, and refreshes stock hubs that still match a previous template. It does not yet re-normalize stored `url:` values.
 - Hub scaffolding: create a `<Category> Hub.md` with Dataview queries whenever a new category folder appears.
 - Mobile capture: finish the iOS Shortcut that writes to a Drive or iCloud `pending_links.txt`.
 - Promotion command: one Obsidian action that sets `status: promoted` and moves the card to `1 - Projects/`.

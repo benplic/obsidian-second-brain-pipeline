@@ -19,7 +19,10 @@ from dataclasses import dataclass
 from ..config import Settings
 from ..io_utils import atomic_write_csv, read_csv_rows, remove_if_exists
 from ..ledger import EVENT_CARDED, UrlLedger
-from ..taxonomy import DEFAULT_CATEGORY, category_tag, folder_for
+from ..model_c.common import stage_for
+from ..model_c.schema import MODEL_C_CATEGORIES
+from ..notes import MODEL_A_CATEGORIES, render_model_a, render_model_c
+from ..taxonomy import DEFAULT_CATEGORY, canonical_category, category_tag, folder_for
 from ..urls import normalize_url
 from ..vault import get_vault_urls, sanitize_filename, write_card, yaml_str
 from .categorize import CSV_FIELDS
@@ -89,11 +92,37 @@ def render_card(row: dict) -> tuple[str, str, str]:
     queries keep working; values are now YAML-escaped. Travel cards get
     extra location/weight keys for the Map View plugin.
     """
-    category = row.get("Category") or DEFAULT_CATEGORY
+    category = canonical_category(row.get("Category") or DEFAULT_CATEGORY)
     title = row.get("Title") or row.get("Summary") or "Saved Post"
     creator = row.get("Creator") or "Unknown"
     url = row.get("URL", "")
     summary = row.get("Summary") or ""
+    if category in MODEL_C_CATEGORIES or category in MODEL_A_CATEGORIES:
+        stage = stage_for(category, usable=True)
+        if category in MODEL_C_CATEGORIES:
+            content = render_model_c(
+                category=category,
+                title=title,
+                creator=creator,
+                url=url,
+                summary=summary,
+                items=[summary] if summary else [],
+                stage=stage,
+                confidence=None,
+                artist=str(row.get("Creator") or ""),
+                sound=title,
+            )
+        else:
+            content = render_model_a(
+                category=category,
+                title=title,
+                creator=creator,
+                url=url,
+                summary=summary,
+                stage=stage,
+                confidence=None,
+            )
+        return category, title, content
     # Travel-only block keeps non-Travel cards unchanged for Dataview compat.
     travel_block = (
         f"\n{_travel_frontmatter_lines(summary)}" if category == TRAVEL_CATEGORY else ""

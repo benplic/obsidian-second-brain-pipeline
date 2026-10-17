@@ -2,11 +2,12 @@
 category: "Movies & Shows"
 creator: "sample.film.clips"
 url: "https://www.tiktok.com/@sample.film.clips/video/0000000000000000004"
-status: "To Watch"
+status: "inbox"
+stage: "to-watch"
 confidence: 0.92
 tags:
-  - second-brain
-  - category/movies-&-shows
+  - saved-media
+  - category/movies-and-shows
   - type/movie
   - genre/thriller
 ---

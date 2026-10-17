@@ -1,15 +1,7 @@
-"""Model A ingest: per-URL tiered analysis straight into the vault.
+"""Model A helpers. ``run_ingest`` reads ``pending_links.txt`` through the dispatcher.
 
-Tier 1: yt-dlp metadata. If the caption is sparse (< 40 chars):
-Tier 2: low-bitrate audio -> Gemini transcript. If still empty:
-Tier 3: two keyframes -> Gemini vision (needs the ``model-a`` extra).
-
-Changes vs the original script:
-  * dedupes against vault + ledger before spending any request;
-  * pops each URL from the inbox right after its card is written (the
-    original cleared the whole inbox only at the very end, so a crash replayed
-    everything and an exception mid-run left duplicates);
-  * 429 backoff via the shared helper; non-rate-limit errors stop the run.
+Tech, Project Ideas, and Movies are transformed only after classification.
+The tier helpers below remain for sparse clips; they do not choose a folder.
 """
 
 from __future__ import annotations
@@ -170,59 +162,9 @@ tags:
 """
 
 
-def _pop_inbox_line(inbox: Path, line: str) -> None:
-    """Remove one processed line, re-reading so concurrent appends survive."""
-    lines = [ln.strip() for ln in inbox.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    lines = [ln for ln in lines if ln != line]
-    atomic_write_text(inbox, "".join(f"{ln}\n" for ln in lines))
-
-
 def run_ingest(settings: Settings, runtime: LlmRuntime | None = None) -> IngestResult:
-    result = IngestResult()
-    settings.require_vault()
-    inbox = settings.model_a_inbox_path
-    if not inbox.exists():
-        logger.info("No pending links file at %s", inbox)
-        return result
-    lines = [ln.strip() for ln in inbox.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    if not lines:
-        logger.info("Model A inbox is empty.")
-        return result
+    """Read pending_links.txt via the shared dispatcher. The Model A inbox is not popped."""
+    from ..dispatch import run_dispatch
 
-    ledger = UrlLedger(settings.ledger_path)
-    known = get_vault_urls(settings.resources_dir) | ledger.urls
-    runtime = runtime or build_runtime(settings)
-    logger.info("Processing %d link(s) for Model A...", len(lines))
-
-    for idx, line in enumerate(lines, 1):
-        if not is_valid_http_url(line):
-            logger.warning("[%d/%d] Not an http(s) URL, left in inbox: %r", idx, len(lines), line)
-            continue
-        url = normalize_url(line)
-        if url in known:
-            result.skipped_known += 1
-            _pop_inbox_line(inbox, line)
-            continue
-        logger.info("[%d/%d] Analyzing: %s", idx, len(lines), url)
-        try:
-            meta, analysis = analyze_video(runtime, settings, url)
-        except (DailyQuotaExhaustedError, RateLimitExhaustedError) as exc:
-            result.stopped_reason = str(exc)
-        except (UnsupportedFeatureError, ValidationError) as exc:
-            # TODO: decide whether to route unparseable items to Manual Review instead of stopping.
-            result.stopped_reason = f"Unparseable Gemini response: {exc}"
-        if result.stopped_reason:
-            logger.error("Stopping Model A ingest: %s. Remaining links stay in the inbox.", result.stopped_reason)
-            break
-
-        r = route(settings.resources_dir, analysis.category, analysis.confidence,
-                  analysis.needs_manual_review, settings.model_a.confidence_threshold)
-        stem = sanitize_filename(meta["title"] or analysis.summary, max_len=50, fallback="Untitled Video")
-        path = write_card(r.target_dir, stem, render_note(meta, analysis, url, r.status, r.category_label))
-        ledger.record(url, EVENT_CARDED, category=r.category_label, source="model-a-ingest")
-        known.add(url)
-        _pop_inbox_line(inbox, line)
-        result.created += 1
-        logger.info("  -> Created %s [status: %s]", path.name, r.status)
-
-    return result
+    dispatched = run_dispatch(settings, runtime)
+    return IngestResult(created=dispatched.created, skipped_known=dispatched.skipped_known, stopped_reason=dispatched.stopped_reason)

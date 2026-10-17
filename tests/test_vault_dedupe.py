@@ -47,7 +47,7 @@ def test_rendered_card_escapes_quotes_and_round_trips():
     fm = parse_frontmatter(content)
     assert fm["creator"] == 'The "Real" One\\'
     assert fm["url"] == "https://t.co/q"
-    assert fm["tags"] == ["saved-media", "category/comedy/funny"]
+    assert fm["tags"] == ["saved-media", "category/comedy-funny"]
 
 
 def test_sanitize_filename_edge_cases():

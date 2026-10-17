@@ -32,6 +32,7 @@ LEDGER_FILE_NAME = "url_ledger.jsonl"
 CRUSHER_STATE_FILE = "crusher_state.jsonl"
 CRUSHER_CACHE_DIR = "crusher_cache"
 CRUSHER_LOCK_FILE = "crusher.lock"
+PIPELINE_LOCK_FILE = "pipeline.lock"
 CRUSHER_REPORT_FILE = "crusher_report.md"
 CRUSHER_MANUAL_REVIEW_FILE = "crusher_manual_review.md"
 
@@ -276,6 +277,11 @@ class Settings:
     @property
     def crusher_lock_path(self) -> Path:
         return self.second_brain_dir / CRUSHER_LOCK_FILE
+
+    @property
+    def pipeline_lock_path(self) -> Path:
+        """Held by ``second-brain run`` and the model ingest commands. Not the crusher lock."""
+        return self.second_brain_dir / PIPELINE_LOCK_FILE
 
     @property
     def crusher_report_path(self) -> Path:
