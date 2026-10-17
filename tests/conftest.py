@@ -65,6 +65,47 @@ class FakeClient:
         self.models = FakeModels(responses)
 
 
+class FakeRuntime:
+    """Stands in for ``LlmRuntime`` in offline pipeline tests."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls: list = []
+        self.adapter = SimpleNamespace(provider_label="fake")
+
+    def complete(self, request, *, sleep=None, rng=None):
+        import random
+        import time
+
+        from second_brain.gemini import call_with_backoff
+        from second_brain.llm.types import CompletionResult, QuotaExhaustedError, RateLimitError
+
+        sleep = sleep or time.sleep
+        rng = rng or random.uniform
+
+        def once():
+            if not self._responses:
+                raise AssertionError("Unexpected extra LLM call")
+            item = self._responses.pop(0)
+            self.calls.append(request)
+            if isinstance(item, BaseException):
+                if isinstance(item, genai_errors.ClientError) and item.code == 429:
+                    if "PerDay" in str(item):
+                        raise QuotaExhaustedError(str(item))
+                    raise RateLimitError(str(item))
+                raise item
+            return CompletionResult(text=item)
+
+        return call_with_backoff(
+            once,
+            max_retries=5,
+            base_seconds=8,
+            jitter=(1.0, 3.0),
+            sleep=sleep,
+            rng=rng,
+        )
+
+
 def mega_response(n: int, cat: str = "Tech & Coding", skip: set[int] | None = None) -> str:
     skip = skip or set()
     return json.dumps({"results": [{"i": i, "cat": cat, "summ": f"summary {i}"} for i in range(n) if i not in skip]})
