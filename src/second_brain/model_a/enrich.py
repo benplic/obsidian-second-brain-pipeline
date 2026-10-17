@@ -27,11 +27,13 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field, ValidationError
 
 from ..config import Settings
-from ..gemini import DailyQuotaExhaustedError, RateLimitExhaustedError, call_with_backoff, create_client
+from ..gemini import DailyQuotaExhaustedError, RateLimitExhaustedError
+from ..llm.factory import build_runtime
+from ..llm.runtime import LlmRuntime
+from ..llm.types import CompletionRequest
 from ..io_utils import atomic_write_text
 from ..ledger import EVENT_CARDED, EVENT_MERGED, UrlLedger
 from ..urls import normalize_url
@@ -136,9 +138,7 @@ def build_payload(cards: list[CardToEnrich], snapshot: dict[str, dict]) -> list[
     return payload
 
 
-def analyze_batch(client, settings: Settings, payload: list[dict]) -> dict[str, VideoAnalysis]:
-    from google.genai import types
-
+def analyze_batch(runtime: LlmRuntime, settings: Settings, payload: list[dict]) -> dict[str, VideoAnalysis]:
     prompt = (
         "Analyze these saved videos for an Obsidian Second Brain under Model A.\n"
         f"Target Categories: {MODEL_A_CATEGORIES}.\n\n"
@@ -146,15 +146,9 @@ def analyze_batch(client, settings: Settings, payload: list[dict]) -> dict[str, 
         "For each video, return the analysis matching its 'item_id'. Extract appropriate criteria tags. "
         "If a video does not fit Tech, Project Ideas, or Movies, flag needs_manual_review=True."
     )
-    response = call_with_backoff(
-        lambda: client.models.generate_content(
-            model=settings.gemini.model, contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=BatchVideoAnalysis),
-        ),
-        max_retries=settings.gemini.max_retries, base_seconds=settings.model_a.backoff_base_seconds,
-        jitter=settings.gemini.jitter_seconds,
-    )
-    parsed = BatchVideoAnalysis.model_validate_json(response.text or "")
+    request = CompletionRequest(prompt=prompt, response_schema=BatchVideoAnalysis)
+    result = runtime.complete(request)
+    parsed = BatchVideoAnalysis.model_validate_json(result.text or "")
     return {item.item_id: item for item in parsed.items}
 
 
@@ -265,7 +259,7 @@ tags:
     return "enriched"
 
 
-def run_enrich(settings: Settings, client=None) -> EnrichResult:
+def run_enrich(settings: Settings, runtime: LlmRuntime | None = None) -> EnrichResult:
     result = EnrichResult()
     settings.require_vault()
     cards = collect_cards(settings)
@@ -274,18 +268,16 @@ def run_enrich(settings: Settings, client=None) -> EnrichResult:
         return result
     snapshot = load_metadata_snapshot(settings.model_a.metadata_snapshot_path)
     ledger = UrlLedger(settings.ledger_path)
-    client = client or create_client()
+    runtime = runtime or build_runtime(settings)
     size = settings.model_a.batch_size
 
     for start in range(0, len(cards), size):
         batch = cards[start:start + size]
         logger.info("--- Batch %d (items %d-%d) ---", start // size + 1, start + 1, start + len(batch))
         try:
-            results = analyze_batch(client, settings, build_payload(batch, snapshot))
+            results = analyze_batch(runtime, settings, build_payload(batch, snapshot))
         except (DailyQuotaExhaustedError, RateLimitExhaustedError) as exc:
             result.stopped_reason = str(exc)
-        except genai_errors.APIError as exc:
-            result.stopped_reason = f"API error {exc.code}: {exc.message or exc}"
         except ValidationError as exc:
             result.stopped_reason = f"Unparseable Gemini response: {exc}"
         if result.stopped_reason:

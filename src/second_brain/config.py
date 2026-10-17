@@ -62,6 +62,33 @@ class GeminiSettings:
 
 
 @dataclass(frozen=True)
+class LlmSettings:
+    """Bring-your-own-key LLM route for crush, categorize, and model-a."""
+
+    provider: str = "gemini"  # gemini | openai
+    model: str = "gemini-3.6-flash"
+    fallback_model: str | None = None
+    base_url: str = "https://api.openai.com/v1"
+    api_key_env_vars: tuple[str, ...] = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+    structured_output: str | None = None  # schema | json_object | prompt_only
+    supports_vision: bool = True
+    supports_audio: bool = True
+    supports_video_upload: bool = True
+    max_images: int | None = None
+    thinking_level: str | None = "LOW"
+    price_input_per_m: float | None = None
+    price_output_per_m: float | None = None
+    max_retries: int = 5
+    backoff_base_seconds: float = 8.0
+    jitter_seconds: tuple[float, float] = (1.0, 3.0)
+
+    def effective_structured_output(self) -> str:
+        if self.structured_output:
+            return self.structured_output
+        return "schema" if self.provider == "gemini" else "json_object"
+
+
+@dataclass(frozen=True)
 class ModelASettings:
     inbox_path: Path | None = None
     metadata_snapshot_path: Path | None = None
@@ -184,9 +211,16 @@ class Settings:
     resources_subdir: str = "3 - Resources"
     extract: ExtractSettings = field(default_factory=ExtractSettings)
     gemini: GeminiSettings = field(default_factory=GeminiSettings)
+    llm: LlmSettings = field(default_factory=LlmSettings)
     model_a: ModelASettings = field(default_factory=ModelASettings)
     crusher: CrusherSettings = field(default_factory=CrusherSettings)
     folder_map: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_FOLDER_MAP))
+
+    def effective_price_input_per_m(self) -> float | None:
+        return self.llm.price_input_per_m if self.llm.price_input_per_m is not None else self.crusher.price_input_per_m
+
+    def effective_price_output_per_m(self) -> float | None:
+        return self.llm.price_output_per_m if self.llm.price_output_per_m is not None else self.crusher.price_output_per_m
 
     @property
     def resources_dir(self) -> Path:
@@ -365,6 +399,63 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
     if crusher.max_passes < 1:
         raise ConfigError("crusher.max_passes must be >= 1")
 
+    llm_raw: dict = {}
+    if "llm" in raw and raw["llm"] is not None:
+        llm_raw = dict(_section(raw, "llm"))
+    if "api_key_env_vars" in llm_raw and llm_raw["api_key_env_vars"] is not None:
+        llm_raw["api_key_env_vars"] = tuple(str(x) for x in llm_raw["api_key_env_vars"])
+    if "jitter_seconds" in llm_raw:
+        jitter = llm_raw["jitter_seconds"]
+        if not (isinstance(jitter, (list, tuple)) and len(jitter) == 2 and jitter[0] <= jitter[1]):
+            raise ConfigError("llm.jitter_seconds must be [min, max] with min <= max")
+        llm_raw["jitter_seconds"] = (float(jitter[0]), float(jitter[1]))
+    for nullable in ("fallback_model", "structured_output", "max_images", "thinking_level", "price_input_per_m", "price_output_per_m"):
+        if nullable in llm_raw and llm_raw[nullable] == "":
+            llm_raw[nullable] = None
+    if not llm_raw:
+        llm_raw = {
+            "provider": "gemini",
+            "model": crusher.model,
+            "fallback_model": crusher.fallback_model,
+            "api_key_env_vars": crusher.api_key_env_vars,
+            "thinking_level": crusher.thinking_level,
+            "price_input_per_m": crusher.price_input_per_m,
+            "price_output_per_m": crusher.price_output_per_m,
+            "max_retries": gemini.max_retries,
+            "backoff_base_seconds": gemini.backoff_base_seconds,
+            "jitter_seconds": gemini.jitter_seconds,
+            "supports_video_upload": True,
+        }
+    else:
+        if "model" not in llm_raw:
+            llm_raw["model"] = gemini.model
+        if "api_key_env_vars" not in llm_raw:
+            llm_raw["api_key_env_vars"] = crusher.api_key_env_vars
+        if "max_retries" not in llm_raw:
+            llm_raw["max_retries"] = gemini.max_retries
+        if "backoff_base_seconds" not in llm_raw:
+            llm_raw["backoff_base_seconds"] = gemini.backoff_base_seconds
+        if "jitter_seconds" not in llm_raw:
+            llm_raw["jitter_seconds"] = gemini.jitter_seconds
+        if llm_raw.get("model") and crusher.model and llm_raw["model"] != crusher.model:
+            logger.warning(
+                "llm.model (%s) overrides crusher.model (%s) for LLM calls.",
+                llm_raw["model"],
+                crusher.model,
+            )
+    llm = _build_dataclass(LlmSettings, llm_raw, "llm")
+    if llm.provider not in {"gemini", "openai"}:
+        raise ConfigError("llm.provider must be 'gemini' or 'openai'")
+    if llm.structured_output is not None and llm.structured_output not in {"schema", "json_object", "prompt_only"}:
+        raise ConfigError("llm.structured_output must be schema, json_object, prompt_only, or null")
+    if llm.max_retries < 1:
+        raise ConfigError("llm.max_retries must be >= 1")
+    if llm.provider == "openai" and crusher.visual_mode == "video":
+        logger.warning(
+            "crusher.visual_mode is 'video' but llm.provider is openai; "
+            "use native Gemini or set visual_mode: frames."
+        )
+
     return Settings(
         vault_path=vault_path,
         data_dir=data_dir,
@@ -377,6 +468,7 @@ def settings_from_dict(raw: dict, base_dir: Path) -> Settings:
         resources_subdir=str(raw.get("resources_subdir", "3 - Resources")),
         extract=extract,
         gemini=gemini,
+        llm=llm,
         model_a=_build_dataclass(ModelASettings, model_a_raw, "model_a"),
         crusher=crusher,
         folder_map=folder_map,
