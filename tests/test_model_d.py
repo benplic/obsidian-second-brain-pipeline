@@ -9,6 +9,7 @@ import pytest
 
 from second_brain.cli import build_parser, cmd_model_d
 from second_brain.ledger import EVENT_TOSSED, UrlLedger
+from second_brain.notes import render_manual
 from second_brain.model_d.hubs import (
     render_previous_universal_hub,
     render_universal_hub,
@@ -128,21 +129,57 @@ def test_collect_orders_manual_review_before_inbox_and_skips_tossed(settings):
         stage="manual-review",
         status="inbox",
     )
-    staged = _card(resources, "Art & Spaces", "Hidden problem", status="kept", stage="manual-review")
+    staged = _card(resources, "Art & Spaces", "Hidden problem", status="inbox", stage="manual-review")
+    finished = _card(
+        resources,
+        "Inbox/Manual Review",
+        "Already kept",
+        status="kept",
+        stage="manual-review",
+    )
+    tossed_staged = _card(resources, "Comedy", "Tossed but staged", status="tossed", stage="manual-review")
 
     queued = [item.path for item in collect_candidates(resources)]
     assert queued == [manual, staged, inbox]
+    assert finished not in queued
+    assert tossed_staged not in queued
 
 
 def test_triage_keep_preserves_the_note_body(settings):
-    path = _card(settings.resources_dir, "Comedy", "Keep me", notes="- handwritten note")
+    path = _card(settings.resources_dir, "Comedy", "Keep me", notes="- handwritten note", stage="ready")
     _, body = split_frontmatter(path.read_text(encoding="utf-8"))
 
     assert run_triage(settings, ask=_script(["k"])) == 0
 
     updated = path.read_text(encoding="utf-8")
-    assert parse_frontmatter_strict(updated)["status"] == "kept"
+    fm = parse_frontmatter_strict(updated)
+    assert fm["status"] == "kept"
+    assert fm["stage"] == "ready"
     assert split_frontmatter(updated)[1] == body
+
+
+def test_keep_files_a_manual_review_card_and_clears_stage(settings):
+    resources = settings.resources_dir
+    path = resources / "Inbox" / "Manual Review" / "Needs a person.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        render_manual(
+            "https://example.com/manual",
+            summary="Needs a person",
+            category="Comedy/Funny",
+        ),
+        encoding="utf-8",
+    )
+
+    assert run_triage(settings, ask=_script(["k"])) == 0
+
+    dest = resources / "Comedy" / "Needs a person.md"
+    assert dest.is_file()
+    assert not path.exists()
+    fm = parse_frontmatter_strict(dest.read_text(encoding="utf-8"))
+    assert fm["status"] == "kept"
+    assert "stage" not in fm
+    assert collect_candidates(resources) == []
 
 
 def test_triage_move_updates_category_and_does_not_overwrite(settings):
@@ -153,6 +190,7 @@ def test_triage_move_updates_category_and_does_not_overwrite(settings):
         "Move me",
         url="https://example.com/move",
         tags=["saved-media", "category/miscellaneous", "topic/jokes"],
+        stage="manual-review",
     )
     occupant = resources / "Comedy" / "Move me.md"
     occupant.parent.mkdir(parents=True)
@@ -167,6 +205,7 @@ def test_triage_move_updates_category_and_does_not_overwrite(settings):
     fm = parse_frontmatter_strict(dest.read_text(encoding="utf-8"))
     assert fm["category"] == "Comedy/Funny"
     assert fm["status"] == "inbox"
+    assert "stage" not in fm
     assert fm["tags"] == ["saved-media", "topic/jokes", "category/comedy-funny"]
     assert split_frontmatter(dest.read_text(encoding="utf-8"))[1] == body
 
@@ -211,18 +250,38 @@ def test_triage_promote_sanitizes_the_project_folder(settings):
 
 def test_triage_toss_hides_and_delete_records_the_ledger(settings):
     resources = settings.resources_dir
-    tossed = _card(resources, "Comedy", "Hide me", url="https://example.com/hide")
+    tossed = _card(resources, "Comedy", "Hide me", url="https://example.com/hide", stage="manual-review")
     deleted = _card(resources, "Art & Spaces", "Remove me", url="https://example.com/remove")
 
-    # Art & Spaces sorts before Comedy, so Remove me is prompted first.
-    assert run_triage(settings, ask=_script(["t", "d", "t", ""])) == 0
+    # stage: manual-review is prompted before a plain inbox note.
+    assert run_triage(settings, ask=_script(["t", "", "t", "d"])) == 0
 
     assert tossed.is_file()
-    assert parse_frontmatter_strict(tossed.read_text(encoding="utf-8"))["status"] == "tossed"
+    tossed_fm = parse_frontmatter_strict(tossed.read_text(encoding="utf-8"))
+    assert tossed_fm["status"] == "tossed"
+    assert "stage" not in tossed_fm
+    assert collect_candidates(resources) == []
     assert not deleted.exists()
     ledger = UrlLedger(settings.ledger_path)
     assert not ledger.has_event("https://example.com/hide", EVENT_TOSSED)
     assert ledger.has_event("https://example.com/remove", EVENT_TOSSED)
+
+
+def test_broken_frontmatter_delete_needs_confirmation_and_ledgers_the_url(settings):
+    resources = settings.resources_dir
+    path = resources / "Inbox" / "Manual Review" / "Broken.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '---\nurl: "https://example.com/broken"\nstatus: "inbox"\ncategory: [oops\n---\n\n# Broken\n',
+        encoding="utf-8",
+    )
+
+    assert run_triage(settings, ask=_script(["d", "s"])) == 0
+    assert path.is_file()
+
+    assert run_triage(settings, ask=_script(["t", "d"])) == 0
+    assert not path.exists()
+    assert UrlLedger(settings.ledger_path).has_event("https://example.com/broken", EVENT_TOSSED)
 
 
 def test_triage_skip_and_noninteractive_exit(settings, monkeypatch):

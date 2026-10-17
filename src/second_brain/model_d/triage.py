@@ -19,8 +19,9 @@ from pathlib import Path
 from ..config import Settings
 from ..io_utils import atomic_write_text
 from ..ledger import EVENT_TOSSED, UrlLedger
-from ..taxonomy import category_tag
+from ..taxonomy import category_tag, folder_for
 from ..vault import (
+    parse_frontmatter,
     parse_frontmatter_strict,
     rebuild_card,
     sanitize_filename,
@@ -35,6 +36,9 @@ PROJECTS_DIRNAME = "1 - Projects"
 
 _SKIP_SUFFIXES = ("Hub.md", "Kanban.md", "Map.md")
 _MANUAL_REVIEW_PARTS = ("Inbox", "Manual Review")
+# Human triage outcomes. A note in one of these states is finished even when
+# it still sits in Inbox/Manual Review or still carries stage: manual-review.
+_TERMINAL_STATUSES = {"kept", "promoted", "tossed"}
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/*?:"<>|]')
 _WINDOWS_RESERVED = {
     "CON",
@@ -197,18 +201,35 @@ def _rank(path: Path, fm: dict | None, resources_dir: Path) -> int:
     return 2
 
 
+def _in_manual_review(path: Path, resources_dir: Path) -> bool:
+    try:
+        return path.relative_to(resources_dir).parts[:2] == _MANUAL_REVIEW_PARTS
+    except ValueError:
+        return False
+
+
 def _is_queued(path: Path, fm: dict | None, resources_dir: Path) -> bool:
     if path.name.startswith(".") or path.name.endswith(_SKIP_SUFFIXES):
         return False
     try:
-        parts = path.relative_to(resources_dir).parts
+        path.relative_to(resources_dir)
     except ValueError:
         return False
-    if parts[:2] == _MANUAL_REVIEW_PARTS:
-        return True
+    # Checked before the holding-folder rule. Otherwise keep/toss leaves the
+    # note in Inbox/Manual Review and the next run shows it again.
     status = _field(fm, "status").lower()
+    if status in _TERMINAL_STATUSES:
+        return False
+    if _in_manual_review(path, resources_dir):
+        return True
     stage = _field(fm, "stage").lower()
     return status in {"inbox", "manual-review"} or stage == "manual-review"
+
+
+def _clear_manual_review_stage(fm: dict) -> None:
+    """Drop pipeline manual-review. Other stages (ready, to-watch) stay."""
+    if _field(fm, "stage").lower() == "manual-review":
+        fm.pop("stage", None)
 
 
 def collect_candidates(resources_dir: Path) -> list[Candidate]:
@@ -229,10 +250,10 @@ def collect_candidates(resources_dir: Path) -> list[Candidate]:
                 logger.warning("Skipping unreadable note %s: %s", path, exc)
                 continue
             fm = parse_frontmatter_strict(content)
-            if fm is None:
-                logger.warning("Unparseable frontmatter in %s", path)
             if not _is_queued(path, fm, resources_dir):
                 continue
+            if fm is None:
+                logger.warning("Unparseable frontmatter in %s", path)
             found.append(Candidate(
                 path=path,
                 content=content,
@@ -325,8 +346,34 @@ def _apply_category(fm: dict, folder: str, folder_map: dict[str, str]) -> None:
     fm["tags"] = replace_category_tag(fm.get("tags"), category)
 
 
-def _delete_note(settings: Settings, candidate: Candidate) -> None:
+def _note_url(candidate: Candidate) -> str:
+    """URL from strict frontmatter, or the lenient regex when YAML is broken.
+
+    A strict failure drops every key. The ledger still needs the url line so
+    a deleted card is not fetched and billed again.
+    """
     url = _field(candidate.fm, "url")
+    if url:
+        return url
+    return _field(parse_frontmatter(candidate.content), "url")
+
+
+def _keep_directory(candidate: Candidate, settings: Settings) -> Path:
+    """Where a kept note belongs.
+
+    A note already in a category folder stays there. A note in the holding
+    folder is filed with ``folder_for``, because Inbox/Manual Review is not
+    a category hub and would never list it.
+    """
+    if not _in_manual_review(candidate.path, settings.resources_dir):
+        return candidate.path.parent
+    folder = folder_for(_field(candidate.fm, "category"), settings.folder_map)
+    folder = existing_directory_name(settings.resources_dir, folder)
+    return settings.resources_dir / folder
+
+
+def _delete_note(settings: Settings, candidate: Candidate) -> None:
+    url = _note_url(candidate)
     if url:
         # Record the toss before unlinking so a crash cannot drop the URL
         # and cause the next ingest to spend another Gemini request on it.
@@ -343,7 +390,7 @@ def _delete_note(settings: Settings, candidate: Candidate) -> None:
 def _prompt_action(candidate: Candidate, settings: Settings, ask: Ask, counts: TriageCounts) -> bool:
     """Handle one note. Return True when the session should stop."""
     if not _can_rewrite(candidate):
-        print("This note has no usable frontmatter. You can skip it, quit, or delete it.")
+        print("This note's frontmatter could not be parsed. Skip, quit, or toss and then confirm delete.")
     while True:
         try:
             choice = ask(_COMMAND_PROMPT).strip().lower()
@@ -355,20 +402,17 @@ def _prompt_action(candidate: Candidate, settings: Settings, ask: Ask, counts: T
         if choice in {"s", "skip"}:
             counts.skipped += 1
             return False
-        if choice in {"d", "delete"} and not _can_rewrite(candidate):
-            _delete_note(settings, candidate)
-            counts.deleted += 1
-            print(f"Deleted {candidate.path.name}")
-            return False
-        if not _can_rewrite(candidate):
-            print("Choose [s]kip, [q]uit, or [d]elete.")
+        if not _can_rewrite(candidate) and choice not in {"t", "toss"}:
+            print("Choose [s]kip, [q]uit, or [t]oss, then d to delete.")
             continue
         if choice in {"k", "keep"}:
             updated = dict(candidate.fm or {})
             updated["status"] = "kept"
-            _rewrite(candidate, updated, candidate.path.parent, settings.resources_dir)
+            _clear_manual_review_stage(updated)
+            dest_dir = _keep_directory(candidate, settings)
+            dest = _rewrite(candidate, updated, dest_dir, settings.resources_dir)
             counts.kept += 1
-            print(f"Kept {candidate.path.name}")
+            print(f"Kept {_relative(dest, settings.vault_path)}")
             return False
         if choice in {"m", "move"}:
             folder_raw = ask(_FOLDER_PROMPT).strip()
@@ -389,6 +433,7 @@ def _prompt_action(candidate: Candidate, settings: Settings, ask: Ask, counts: T
                 continue
             updated = dict(candidate.fm or {})
             _apply_category(updated, folder_name, settings.folder_map)
+            _clear_manual_review_stage(updated)
             dest = _rewrite(candidate, updated, dest_dir, settings.resources_dir)
             counts.moved += 1
             print(f"Moved to {_relative(dest, settings.vault_path)}")
@@ -412,6 +457,7 @@ def _prompt_action(candidate: Candidate, settings: Settings, ask: Ask, counts: T
                 continue
             updated = dict(candidate.fm or {})
             updated["status"] = "promoted"
+            _clear_manual_review_stage(updated)
             dest = _rewrite(candidate, updated, dest_dir, projects_root)
             counts.promoted += 1
             print(f"Promoted to {_relative(dest, settings.vault_path)}")
@@ -430,9 +476,13 @@ def _prompt_action(candidate: Candidate, settings: Settings, ask: Ask, counts: T
                 counts.deleted += 1
                 print(f"Deleted {candidate.path.name}")
                 return False
+            if not _can_rewrite(candidate):
+                print("Status cannot be updated until the frontmatter parses. Press d to delete, or c to cancel.")
+                continue
             if decision in {"", "t", "toss"}:
                 updated = dict(candidate.fm or {})
                 updated["status"] = "tossed"
+                _clear_manual_review_stage(updated)
                 _rewrite(candidate, updated, candidate.path.parent, settings.resources_dir)
                 counts.tossed += 1
                 print(
