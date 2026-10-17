@@ -163,6 +163,31 @@ def cmd_doctor(_settings: Settings, args) -> int:
     return run_doctor(args.config)
 
 
+def cmd_model_d(settings: Settings, args) -> int:
+    if args.repair and not args.scaffold:
+        logger.error("--repair requires --scaffold.")
+        return 2
+    settings.require_vault()
+    if args.scaffold:
+        from .model_d.hubs import scaffold_hubs
+
+        result = scaffold_hubs(
+            settings.resources_dir,
+            repair=args.repair,
+            resources_subdir=settings.resources_subdir,
+        )
+        logger.info(
+            "Model D hubs: %d created, %d repaired, %d left unchanged.",
+            len(result.created),
+            len(result.repaired),
+            len(result.unchanged),
+        )
+        return 0
+    from .model_d.triage import run_triage
+
+    return run_triage(settings)
+
+
 def cmd_migrate_travel(settings: Settings, args) -> int:
     from .migrate_travel import run_migrate_travel
 
@@ -234,6 +259,19 @@ def build_parser() -> argparse.ArgumentParser:
         "model-b-ingest",
         help="Travel: keyframes, audio fallback, and Nominatim pins",
     ).set_defaults(func=cmd_model_b_ingest)
+    p_model_d = sub.add_parser(
+        "model-d",
+        help="Universal category hubs (--scaffold) or interactive inbox triage (--triage)",
+    )
+    model_d_mode = p_model_d.add_mutually_exclusive_group(required=True)
+    model_d_mode.add_argument("--scaffold", action="store_true", help="Create missing category hubs")
+    model_d_mode.add_argument("--triage", action="store_true", help="Triage inbox and manual-review notes")
+    p_model_d.add_argument(
+        "--repair",
+        action="store_true",
+        help="With --scaffold, refresh stock Model D hubs that still match a previous template",
+    )
+    p_model_d.set_defaults(func=cmd_model_d)
     sub.add_parser("setup", help="Interactive wizard: choose LLM provider and write llm: in config.yaml").set_defaults(func=cmd_setup)
     sub.add_parser("doctor", help="Verify API key, text call, and vision probe for configured LLM").set_defaults(func=cmd_doctor)
     return parser
