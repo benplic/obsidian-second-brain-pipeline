@@ -26,6 +26,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from ..config import CrusherSettings
+from ..taxonomy import jev_category_criteria
 from .acquire import AcquiredMedia
 from .schema import CrusherAnalysis, MediaShape
 
@@ -176,7 +177,7 @@ class JevClassifier:
                 "type": "choice",
                 "instructions": "Which library category does this saved short video belong in, judged by its "
                 "actual content rather than hashtags?",
-                "criteria": {name: name for name in taxonomy},
+                "criteria": jev_category_criteria(taxonomy),
             },
             "media_shape": {
                 "type": "choice",

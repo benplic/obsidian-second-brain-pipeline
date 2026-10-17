@@ -39,6 +39,8 @@ def test_prompt_is_compact_and_lists_taxonomy():
     batch = [{"title": "T" * 200, "description": "D" * 200}]
     prompt = build_prompt(batch, list(DEFAULT_FOLDER_MAP))
     assert "Art/Organization/Spaces" in prompt
+    assert "Tips" in prompt
+    assert "life hacks" in prompt
     payload = json.loads(prompt.split("Input Data:\n", 1)[1])
     assert payload == [{"i": 0, "t": "T" * 70, "c": "D" * 90}]
 

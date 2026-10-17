@@ -4,7 +4,7 @@
 
 Turn the short-form videos you save on TikTok and Instagram into small, actionable Markdown cards in an [Obsidian](https://obsidian.md) vault organized with P.A.R.A.
 
-You capture on the phone (the iOS Share Sheet appends a URL to a synced text file). Later, one click on the desktop pulls metadata with `yt-dlp`, has Gemini sort about 100 videos per request into 13 categories, and writes one card per video into `3 - Resources/<Category>/`. From there you triage cards with Dataview hubs, Kanban boards, and so on.
+You capture on the phone (the iOS Share Sheet appends a URL to a synced text file). Later, one click on the desktop pulls metadata with `yt-dlp`, has Gemini sort about 100 videos per request into 14 categories, and writes one card per video into `3 - Resources/<Category>/`. From there you triage cards with Dataview hubs, Kanban boards, and so on.
 
 This repo holds the pipeline code and templates only. Your vault, queue files, Instagram export, and API key stay local and are gitignored.
 
