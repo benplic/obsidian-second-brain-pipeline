@@ -249,16 +249,21 @@ def collect_candidates(resources_dir: Path) -> list[Candidate]:
             except (OSError, UnicodeDecodeError) as exc:
                 logger.warning("Skipping unreadable note %s: %s", path, exc)
                 continue
-            fm = parse_frontmatter_strict(content)
-            if not _is_queued(path, fm, resources_dir):
+            strict = parse_frontmatter_strict(content)
+            # A YAML error is None, which looks like "no status" and would
+            # hide a broken inbox card or re-queue a tossed holding-folder
+            # note. The lenient parse still sees the status line. Rewrites
+            # keep the strict dict so rebuild_card cannot drop every key.
+            queue_fm = parse_frontmatter(content) if strict is None else strict
+            if not _is_queued(path, queue_fm, resources_dir):
                 continue
-            if fm is None:
+            if strict is None:
                 logger.warning("Unparseable frontmatter in %s", path)
             found.append(Candidate(
                 path=path,
                 content=content,
-                fm=fm,
-                rank=_rank(path, fm, resources_dir),
+                fm=strict,
+                rank=_rank(path, queue_fm, resources_dir),
             ))
     found.sort(key=lambda item: (item.rank, str(item.path).lower()))
     return found

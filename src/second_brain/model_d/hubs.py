@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..io_utils import atomic_write_text
+from ..model_c.hubs import generic_hub
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,8 @@ def render_universal_hub(folder: str, resources_subdir: str = "3 - Resources") -
 def render_previous_universal_hub(folder: str, resources_subdir: str = "3 - Resources") -> str:
     """Stock hub shipped before the manual-review callout and stage filter.
 
-    ``--repair`` replaces a file only when it still matches this text.
+    ``--repair`` replaces a file only when it still matches this text, or the
+    Model C generic hub that ``ensure_hubs`` writes for the same folder.
     """
     source = dataview_source(resources_subdir, folder)
     return _hub_body(
@@ -147,6 +149,18 @@ def render_previous_universal_hub(folder: str, resources_subdir: str = "3 - Reso
         marker=PREVIOUS_HUB_MARKER,
         exclude_stage=False,
         include_callout=False,
+    )
+
+
+def previous_stock_bodies(folder: str, resources_subdir: str = "3 - Resources") -> tuple[str, ...]:
+    """Exact texts ``--repair`` may replace.
+
+    ``generic_hub`` is what ``second-brain run`` already plants. A one-line
+    edit of either body must not match, so a scrapbook note is left alone.
+    """
+    return (
+        render_previous_universal_hub(folder, resources_subdir),
+        generic_hub(folder),
     )
 
 
@@ -160,7 +174,7 @@ def scaffold_hubs(
 
     Only direct child folders are considered. ``Inbox``, dot-folders, and
     model-owned folders are skipped. Existing hubs are not rewritten unless
-    ``repair`` is set and the file is still the previous stock template.
+    ``repair`` is set and the file is still a known stock template.
     """
     result = ScaffoldResult()
     resources_dir = Path(resources_dir)
@@ -198,8 +212,7 @@ def scaffold_hubs(
             result.unchanged.append(path)
             continue
 
-        previous = render_previous_universal_hub(name, resources_subdir)
-        if repair and current == previous:
+        if repair and current in previous_stock_bodies(name, resources_subdir):
             atomic_write_text(path, body)
             logger.info("Repaired stock hub %s", path)
             result.repaired.append(path)
