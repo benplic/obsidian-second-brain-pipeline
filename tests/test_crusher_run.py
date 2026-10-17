@@ -8,7 +8,7 @@ from second_brain.crusher import CrushOptions, run_crush
 from second_brain.crusher.acquire import TIER_CAPTIONS, TIER_VISUAL, AcquiredMedia
 from second_brain.crusher.budget import SpendCapReachedError
 from second_brain.crusher.schema import CrusherAnalysis, ExtractedItem
-from second_brain.crusher.state import STATUS_FAILED_RETRYABLE, STATUS_UNAVAILABLE, CrusherState
+from second_brain.crusher.state import STATUS_DONE, STATUS_FAILED_RETRYABLE, STATUS_UNAVAILABLE, CrusherState
 from second_brain.crusher.ytdlp import TransientFetchError
 
 from conftest import make_card
@@ -76,7 +76,7 @@ def test_short_text_list_escalates_to_keyframes(crush_settings, monkeypatch, tmp
 
     calls: list[int] = []
 
-    def fake_analyze(budget, cfg, media, ctx, taxonomy):
+    def fake_analyze(budget, runtime, app_settings, media, ctx, taxonomy):
         calls.append(len(media.keyframe_paths))
         count = 6 if not media.keyframe_paths else 10
         return _analysis(
@@ -101,7 +101,7 @@ def test_spend_cap_stops_and_resume_skips_done(crush_settings, monkeypatch):
     monkeypatch.setattr("second_brain.crusher.run.acquire_text", lambda u, cfg, runner, **kw: _text_media(u))
     seen: list[str] = []
 
-    def capped(budget, cfg, media, ctx, taxonomy):
+    def capped(budget, runtime, app_settings, media, ctx, taxonomy):
         if len(seen) >= 1:
             raise SpendCapReachedError("cap")
         seen.append(media.url)
@@ -114,6 +114,28 @@ def test_spend_cap_stops_and_resume_skips_done(crush_settings, monkeypatch):
     monkeypatch.setattr("second_brain.crusher.run.analyze_media", lambda *a, **k: _analysis(title="later"))
     second = run_crush(crush_settings, CrushOptions())
     assert second.skipped == 1 and second.analyzed == 2
+
+
+def test_apply_writes_cached_cards_after_quota_stop(crush_settings, monkeypatch):
+    url_new = "https://www.tiktok.com/@u/video/1"
+    url_cached = "https://www.tiktok.com/@u/video/2"
+    make_card(crush_settings.resources_dir, "Inbox", "a-new", url_new)
+    make_card(crush_settings.resources_dir, "Inbox", "b-cached", url_cached)
+    pv = crush_settings.crusher.prompt_version
+    state = CrusherState(crush_settings.crusher_state_path, crush_settings.crusher_cache_dir)
+    state.save_analysis(url_cached, _analysis(title="Cached tip"), prompt_version=pv, passes=1)
+    state.record(url_cached, status=STATUS_DONE, prompt_version=pv)
+
+    monkeypatch.setattr("second_brain.crusher.run.acquire_text", lambda u, cfg, runner, **kw: _text_media(u))
+
+    def capped(budget, cfg, media, ctx, taxonomy):
+        raise SpendCapReachedError("cap")
+
+    monkeypatch.setattr("second_brain.crusher.run.analyze_media", capped)
+    result = run_crush(crush_settings, CrushOptions(apply=True))
+    assert result.stopped_reason == "cap"
+    assert result.written == 1
+    assert (crush_settings.resources_dir / "Tech & Coding" / "Cached tip.md").is_file()
 
 
 def test_transient_fetch_is_retryable_then_unavailable(crush_settings, monkeypatch):
@@ -140,8 +162,8 @@ def test_max_spend_flag_overrides_config(crush_settings, monkeypatch):
     seen: list = []
     monkeypatch.setattr("second_brain.crusher.run.acquire_text", lambda u, cfg, runner, **kw: _text_media(u))
 
-    def spy(budget, cfg, media, ctx, taxonomy):
-        seen.append(cfg.max_spend_usd)
+    def spy(budget, runtime, app_settings, media, ctx, taxonomy):
+        seen.append(app_settings.crusher.max_spend_usd)
         return _analysis()
 
     monkeypatch.setattr("second_brain.crusher.run.analyze_media", spy)

@@ -18,6 +18,8 @@ from pydantic import ValidationError
 
 from ..config import CrusherSettings, Settings
 from ..gemini import DailyQuotaExhaustedError, MissingApiKeyError, RateLimitExhaustedError
+from ..llm.factory import build_runtime
+from ..llm.runtime import LlmRuntime
 from ..io_utils import atomic_write_text
 from ..urls import normalize_url
 from ..vault import iter_cards, parse_frontmatter_strict
@@ -34,12 +36,14 @@ from .classify import Classifier, JevClassifier, build_classifier, build_state, 
 from .gate import decide_visuals
 from .lock import CrusherLock, CrusherLockError
 from .postpass import run_postpass
+from .review import classify_terminal
 from .probe import ensure_ffmpeg
 from .schema import CrusherAnalysis
 from .state import (
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_FAILED_RETRYABLE,
+    STATUS_MANUAL_REVIEW,
     STATUS_NEEDS_REVIEW,
     STATUS_UNAVAILABLE,
     CrusherState,
@@ -77,6 +81,7 @@ class CrushResult:
     unavailable: int = 0
     retryable: int = 0
     needs_review: int = 0
+    manual_review: int = 0
     stopped_reason: str | None = None
     tiers: Counter = field(default_factory=Counter)
     spend_summary: str = ""
@@ -90,6 +95,7 @@ class _Deps:
     cs: CrusherSettings
     state: CrusherState
     budget: BudgetManager
+    runtime: LlmRuntime
     runner: YtDlpRunner
     transcriber: WhisperTranscriber
     classifier: Classifier
@@ -131,6 +137,20 @@ def _append_report(path: Path, lines: list[str]) -> None:
     atomic_write_text(path, existing + "\n".join(lines) + "\n")
 
 
+def _note_manual_review(settings: Settings, card, url: str, reason: str) -> None:
+    """Append one dead-end item to the manual-review list. Idempotent per URL."""
+    path = settings.crusher_manual_review_path
+    existing = path.read_text(encoding="utf-8") if path.is_file() else (
+        "# Crusher manual review\n\n"
+        "The crusher could not analyze these after every tier and retry. "
+        "Watch them yourself; `--reprocess` tries again.\n\n"
+    )
+    if url in existing:
+        return
+    reason = " ".join(reason.split())[:300]
+    atomic_write_text(path, existing + f"- `{card.path.name}` `{url}` — {reason}\n")
+
+
 def _escalate_visuals(media: AcquiredMedia, deps: _Deps, reasons: list[str]) -> bool:
     """Run T3. Returns False if visuals could not be fetched (item continues text-only)."""
     logger.info("Visual tier for %s: %s", media.url, "; ".join(reasons))
@@ -145,7 +165,7 @@ def _escalate_visuals(media: AcquiredMedia, deps: _Deps, reasons: list[str]) -> 
 
 
 def _summarize_with_escalation(
-    media: AcquiredMedia, ctx: AnalyzeContext, deps: _Deps
+    media: AcquiredMedia, ctx: AnalyzeContext, deps: _Deps, settings: Settings
 ) -> tuple[CrusherAnalysis, int, bool]:
     """Return (analysis, passes, complete). Raises API/budget errors to the caller.
 
@@ -167,7 +187,7 @@ def _summarize_with_escalation(
     while passes < cs.max_passes:
         passes += 1
         ctx.pass_index = passes - 1
-        analysis = analyze_media(deps.budget, cs, media, ctx, deps.taxonomy)
+        analysis = analyze_media(deps.budget, deps.runtime, settings, media, ctx, deps.taxonomy)
         completeness = check_completeness(analysis, media)
         if passes >= cs.max_passes:
             complete = completeness.complete
@@ -231,20 +251,40 @@ def _process_card(card, settings: Settings, opts: CrushOptions, deps: _Deps, res
             subtitle_text=media.transcript_text,
         )
         try:
-            analysis, passes, complete = _summarize_with_escalation(media, ctx, deps)
+            analysis, passes, complete = _summarize_with_escalation(media, ctx, deps, settings)
         except (genai_errors.APIError, ValidationError, TimeoutError, RuntimeError) as exc:
             if isinstance(exc, _RUN_STOPPERS):
                 raise
-            deps.state.record(url, status=STATUS_FAILED, prompt_version=pv, last_error=str(exc))
-            result.report_lines.append(f"- FAILED `{url}`: {exc}")
-            return None, STATUS_FAILED
+            attempts = deps.state.attempts(url) + 1
+            status = classify_terminal(
+                failed=True,
+                attempts=attempts,
+                max_attempts=cs.manual_review_after_attempts,
+                complete=False,
+                flagged=False,
+            )
+            deps.state.record(url, status=status, prompt_version=pv, attempts=attempts, last_error=str(exc))
+            if status == STATUS_MANUAL_REVIEW:
+                result.manual_review += 1
+                _note_manual_review(settings, card, url, str(exc))
+                result.report_lines.append(f"- MANUAL REVIEW `{card.path.name}` `{url}`: {exc}")
+            else:
+                result.retryable += 1
+                result.report_lines.append(f"- RETRY LATER `{url}` (attempt {attempts}): {exc}")
+            return None, status
 
         classification = deps.classifier.classify(
             build_state(media, analysis, current_category=current_category), taxonomy=deps.taxonomy
         )
         flagged = merge_classification(analysis, classification, cs, deps.taxonomy)
 
-        status = STATUS_DONE if complete and not flagged else STATUS_NEEDS_REVIEW
+        status = classify_terminal(
+            failed=False,
+            attempts=passes,
+            max_attempts=cs.manual_review_after_attempts,
+            complete=complete,
+            flagged=flagged,
+        )
         if status == STATUS_NEEDS_REVIEW:
             result.needs_review += 1
         tier = TIER_NAMES.get(media.tier_reached, str(media.tier_reached))
@@ -268,14 +308,19 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
     settings.require_vault()
     ensure_ffmpeg()
 
+    app_settings = settings
     cs = settings.crusher
     if opts.max_spend is not None:
         cs = replace(cs, max_spend_usd=opts.max_spend)
-    budget = BudgetManager(cs, settings.second_brain_dir / "crusher_usage.json")
+        app_settings = replace(settings, crusher=cs)
+    budget = BudgetManager(app_settings, settings.second_brain_dir / "crusher_usage.json")
+    budget.retest_exhausted_keys()
+    runtime = build_runtime(app_settings)
     deps = _Deps(
         cs=cs,
         state=CrusherState(settings.crusher_state_path, settings.crusher_cache_dir),
         budget=budget,
+        runtime=runtime,
         runner=YtDlpRunner(cs),
         transcriber=WhisperTranscriber(cs),
         classifier=build_classifier(cs, on_usage=budget.record_jev_usage),
@@ -290,6 +335,9 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
             result.scanned = len(cards)
             logger.info("Crusher: %d card(s) queued (%s).", len(cards), "apply" if opts.apply else "dry-run")
 
+            # Once the quota or spend cap stops new Gemini calls, keep walking the
+            # queue so cards that already have a cached analysis still get written.
+            api_stopped = False
             for idx, card in enumerate(cards, 1):
                 url = card.url
                 if deps.state.should_skip(url, prompt_version=pv, reprocess=opts.reprocess):
@@ -299,12 +347,15 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
                     status = prior.status if prior else STATUS_DONE
                     if analysis is None:
                         continue
+                elif api_stopped:
+                    continue
                 else:
                     try:
-                        analysis, status = _process_card(card, settings, opts, deps, result)
+                        analysis, status = _process_card(card, app_settings, opts, deps, result)
                     except _RUN_STOPPERS as exc:
                         result.stopped_reason = str(exc)
-                        break
+                        api_stopped = True
+                        continue
                     if analysis is None:
                         continue
 
@@ -345,7 +396,8 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
         logger.info("Report appended to %s", settings.crusher_report_path)
 
     logger.info(
-        "Crusher finished: scanned=%d analyzed=%d written=%d skipped=%d unavailable=%d retryable=%d needs_review=%d",
+        "Crusher finished: scanned=%d analyzed=%d written=%d skipped=%d unavailable=%d retryable=%d "
+        "needs_review=%d manual_review=%d",
         result.scanned,
         result.analyzed,
         result.written,
@@ -353,6 +405,7 @@ def run_crush(settings: Settings, opts: CrushOptions | None = None) -> CrushResu
         result.unavailable,
         result.retryable,
         result.needs_review,
+        result.manual_review,
     )
     logger.info("Crusher %s", result.spend_summary)
     if result.stopped_reason:

@@ -122,6 +122,18 @@ def cmd_crush(settings: Settings, args) -> int:
     return 0
 
 
+def cmd_setup(_settings: Settings, args) -> int:
+    from .setup_ai import run_setup
+
+    return run_setup(args.config)
+
+
+def cmd_doctor(_settings: Settings, args) -> int:
+    from .setup_ai import run_doctor
+
+    return run_doctor(args.config)
+
+
 def cmd_migrate_travel(settings: Settings, args) -> int:
     from .migrate_travel import run_migrate_travel
 
@@ -176,6 +188,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_crush.set_defaults(func=cmd_crush)
     sub.add_parser("model-a-ingest", help="Experimental: per-URL tiered analysis (1-3 requests per URL)").set_defaults(func=cmd_model_a_ingest)
     sub.add_parser("model-a-enrich", help="Experimental: re-classify existing high-value cards").set_defaults(func=cmd_model_a_enrich)
+    sub.add_parser("setup", help="Interactive wizard: choose LLM provider and write llm: in config.yaml").set_defaults(func=cmd_setup)
+    sub.add_parser("doctor", help="Verify API key, text call, and vision probe for configured LLM").set_defaults(func=cmd_doctor)
     return parser
 
 

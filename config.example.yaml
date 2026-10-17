@@ -37,6 +37,22 @@ gemini:
   jitter_seconds: [1, 3]
   pause_between_batches_seconds: 10
 
+# LLM route for crush, categorize, and model-a (BYOK). Omit this block to inherit
+# gemini.model + crusher.api_key_env_vars. Run: second-brain setup / second-brain doctor
+# llm:
+#   provider: gemini              # gemini | openai (OpenAI-compatible base_url)
+#   model: "gemini-3.6-flash"
+#   fallback_model: null
+#   base_url: "https://api.openai.com/v1"   # openai provider only
+#   api_key_env_vars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+#   structured_output: schema      # schema | json_object | prompt_only
+#   supports_vision: true
+#   supports_audio: true
+#   supports_video_upload: true     # false for OpenRouter/Groq; use crusher visual_mode: frames
+#   thinking_level: "LOW"           # Gemini only
+#   price_input_per_m: null
+#   price_output_per_m: null
+
 model_a:
   inbox_path: null             # default: <vault>/3 - Resources/Inbox/pending_links.txt
   metadata_snapshot_path: null # optional old clean_metadata.json for richer enrich prompts
@@ -78,7 +94,8 @@ crusher:
   ytdlp_retries: 3
   ytdlp_max_attempts: 3
   ytdlp_backoff_base_seconds: 30
-  unavailable_after_attempts: 3  # transient failures across this many runs -> unavailable
+  unavailable_after_attempts: 3  # transient fetch failures across this many runs -> unavailable
+  manual_review_after_attempts: 3  # analysis still failing after this many tries -> manual-review list (~1% of a healthy batch)
 
   # Tier thresholds
   min_transcript_words: 25     # fewer caption words -> run audio transcription

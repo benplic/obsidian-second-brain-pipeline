@@ -8,7 +8,7 @@ from second_brain.ledger import UrlLedger
 from second_brain.model_a.enrich import run_enrich
 from second_brain.vault import parse_frontmatter
 
-from conftest import FakeClient, rate_limit_error
+from conftest import FakeRuntime, rate_limit_error
 
 
 def _card(settings, folder, name, url, status="inbox", notes="## Notes & Insights\n- my own insight\n"):
@@ -30,7 +30,7 @@ def test_matches_by_item_id_and_preserves_notes_and_status(settings):
     _card(settings, "Tech & Coding", "old b", "https://t.co/b")
     # Response deliberately out of order.
     resp = json.dumps({"items": [_analysis("1", summary="Second"), _analysis("0", summary="First")]})
-    result = run_enrich(settings, client=FakeClient([resp]))
+    result = run_enrich(settings, runtime=FakeRuntime([resp]))
     assert result.enriched == 2
 
     first = (settings.resources_dir / "Tech & Coding" / "First.md").read_text(encoding="utf-8")
@@ -44,7 +44,7 @@ def test_failed_batch_leaves_cards_untouched(settings, monkeypatch):
     monkeypatch.setattr("time.sleep", lambda s: None)
     path = _card(settings, "Tech & Coding", "keep me", "https://t.co/a")
     before = path.read_text(encoding="utf-8")
-    result = run_enrich(settings, client=FakeClient([rate_limit_error() for _ in range(5)]))
+    result = run_enrich(settings, runtime=FakeRuntime([rate_limit_error() for _ in range(5)]))
     assert result.stopped_reason and result.enriched == 0
     assert path.read_text(encoding="utf-8") == before
     assert not (settings.resources_dir / "Inbox").exists()
@@ -56,7 +56,7 @@ def test_movie_merge_records_url_in_ledger(settings):
     (movies / "Existing Film.md").write_text('---\nurl: "https://t.co/first"\nconfidence: 0.9\n---\n# Existing Film\n', encoding="utf-8")
     _card(settings, "Movies & Shows", "clip", "https://t.co/clip")
     resp = json.dumps({"items": [_analysis("0", category="Movies & Shows", extracted_movie_title="Existing Film")]})
-    result = run_enrich(settings, client=FakeClient([resp]))
+    result = run_enrich(settings, runtime=FakeRuntime([resp]))
     assert result.merged == 1
     assert "https://t.co/clip" in (movies / "Existing Film.md").read_text(encoding="utf-8")
     assert not (movies / "clip.md").exists()

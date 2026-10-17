@@ -21,11 +21,13 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field, ValidationError
 
 from ..config import Settings
-from ..gemini import DailyQuotaExhaustedError, RateLimitExhaustedError, call_with_backoff, create_client
+from ..gemini import DailyQuotaExhaustedError, RateLimitExhaustedError
+from ..llm.factory import build_runtime
+from ..llm.runtime import LlmRuntime
+from ..llm.types import CompletionRequest, UnsupportedFeatureError
 from ..io_utils import atomic_write_text
 from ..ledger import EVENT_CARDED, UrlLedger
 from ..steps.extract_metadata import fetch_metadata
@@ -54,18 +56,11 @@ class IngestResult:
     stopped_reason: str | None = None
 
 
-def _gemini(client, settings: Settings, **kwargs):
-    cfg = settings.gemini
-    return call_with_backoff(
-        lambda: client.models.generate_content(model=cfg.model, **kwargs),
-        max_retries=cfg.max_retries, base_seconds=settings.model_a.backoff_base_seconds, jitter=cfg.jitter_seconds,
-    )
-
-
-def extract_audio_transcript(client, settings: Settings, url: str, tmp_dir: str) -> str | None:
+def extract_audio_transcript(runtime: LlmRuntime, settings: Settings, url: str, tmp_dir: str) -> str | None:
     """Tier 2. Returns None when audio is unavailable; rate limits propagate."""
-    from google.genai import types
-
+    if not settings.llm.supports_audio:
+        logger.info("  [Audio tier skipped] llm.supports_audio is false for this provider.")
+        return None
     audio_path = os.path.join(tmp_dir, "audio.mp3")
     cmd = ["yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "9", "-o", audio_path, "--", url]
     try:
@@ -77,11 +72,12 @@ def extract_audio_transcript(client, settings: Settings, url: str, tmp_dir: str)
         return None
     with open(audio_path, "rb") as handle:
         audio_bytes = handle.read()
-    response = _gemini(client, settings, contents=[
-        types.Part.from_bytes(data=audio_bytes, mime_type="audio/mp3"),
-        "Provide a brief 1-2 sentence transcript/summary of the spoken instructions or discussion in this clip.",
-    ])
-    return (response.text or "").strip() or None
+    request = CompletionRequest(
+        prompt="Provide a brief 1-2 sentence transcript/summary of the spoken instructions or discussion in this clip.",
+        audio=(audio_bytes, "audio/mp3"),
+    )
+    result = runtime.complete(request)
+    return (result.text or "").strip() or None
 
 
 def extract_keyframes(url: str, tmp_dir: str) -> list:
@@ -115,9 +111,7 @@ def extract_keyframes(url: str, tmp_dir: str) -> list:
     return images
 
 
-def analyze_video(client, settings: Settings, url: str) -> tuple[dict, VideoAnalysis]:
-    from google.genai import types
-
+def analyze_video(runtime: LlmRuntime, settings: Settings, url: str) -> tuple[dict, VideoAnalysis]:
     meta = fetch_metadata(url, settings.extract.timeout_seconds, settings.extract.cookies_from_browser) or {
         "title": "", "description": "", "tags": [], "creator": "Unknown", "url": url,
     }
@@ -126,7 +120,7 @@ def analyze_video(client, settings: Settings, url: str) -> tuple[dict, VideoAnal
     with tempfile.TemporaryDirectory() as tmp_dir:
         if len(combined) < SPARSE_TEXT_CHARS:
             logger.info("  - Sparse caption. Trying audio (tier 2)...")
-            transcript = extract_audio_transcript(client, settings, url, tmp_dir)
+            transcript = extract_audio_transcript(runtime, settings, url, tmp_dir)
             if not transcript or len(transcript) < MIN_TRANSCRIPT_CHARS:
                 logger.info("  - Audio empty. Trying keyframes (tier 3)...")
                 frames = extract_keyframes(url, tmp_dir)
@@ -140,10 +134,13 @@ def analyze_video(client, settings: Settings, url: str) -> tuple[dict, VideoAnal
             f"Audio Transcript: {transcript or 'N/A'}\n\n"
             "If this does not fit Tech, Project Ideas, or Movies, or if context is missing, flag needs_manual_review=True."
         )
-        response = _gemini(client, settings, contents=[prompt, *frames], config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=VideoAnalysis,
-        ))
-    return meta, VideoAnalysis.model_validate_json(response.text or "")
+        request = CompletionRequest(
+            prompt=prompt,
+            response_schema=VideoAnalysis,
+            extra_image_objects=frames,
+        )
+        result = runtime.complete(request)
+    return meta, VideoAnalysis.model_validate_json(result.text or "")
 
 
 def render_note(meta: dict, analysis: VideoAnalysis, url: str, status: str, category_label: str) -> str:
@@ -180,7 +177,7 @@ def _pop_inbox_line(inbox: Path, line: str) -> None:
     atomic_write_text(inbox, "".join(f"{ln}\n" for ln in lines))
 
 
-def run_ingest(settings: Settings, client=None) -> IngestResult:
+def run_ingest(settings: Settings, runtime: LlmRuntime | None = None) -> IngestResult:
     result = IngestResult()
     settings.require_vault()
     inbox = settings.model_a_inbox_path
@@ -194,7 +191,7 @@ def run_ingest(settings: Settings, client=None) -> IngestResult:
 
     ledger = UrlLedger(settings.ledger_path)
     known = get_vault_urls(settings.resources_dir) | ledger.urls
-    client = client or create_client()
+    runtime = runtime or build_runtime(settings)
     logger.info("Processing %d link(s) for Model A...", len(lines))
 
     for idx, line in enumerate(lines, 1):
@@ -208,12 +205,10 @@ def run_ingest(settings: Settings, client=None) -> IngestResult:
             continue
         logger.info("[%d/%d] Analyzing: %s", idx, len(lines), url)
         try:
-            meta, analysis = analyze_video(client, settings, url)
+            meta, analysis = analyze_video(runtime, settings, url)
         except (DailyQuotaExhaustedError, RateLimitExhaustedError) as exc:
             result.stopped_reason = str(exc)
-        except genai_errors.APIError as exc:
-            result.stopped_reason = f"API error {exc.code}: {exc.message or exc}"
-        except ValidationError as exc:
+        except (UnsupportedFeatureError, ValidationError) as exc:
             # TODO: decide whether to route unparseable items to Manual Review instead of stopping.
             result.stopped_reason = f"Unparseable Gemini response: {exc}"
         if result.stopped_reason:
