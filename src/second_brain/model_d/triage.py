@@ -232,6 +232,26 @@ def _clear_manual_review_stage(fm: dict) -> None:
         fm.pop("stage", None)
 
 
+_STAGE_LINE_RE = re.compile(r"^stage:\s*[\"']?([^\"'\r\n]+)[\"']?\s*$", re.MULTILINE)
+
+
+def _queue_frontmatter(content: str, strict: dict | None) -> dict:
+    """Frontmatter for queue and rank only.
+
+    Strict YAML is used when it parses. A broken block falls back to the
+    url/status regex, plus a stage line, because manual-review lives in
+    ``stage`` while ``status`` stays ``inbox``. That recovered dict is never
+    passed to ``rebuild_card``.
+    """
+    if strict is not None:
+        return strict
+    recovered = dict(parse_frontmatter(content))
+    fm_text, _ = split_frontmatter(content)
+    if fm_text and (match := _STAGE_LINE_RE.search(fm_text)):
+        recovered["stage"] = match.group(1).strip()
+    return recovered
+
+
 def collect_candidates(resources_dir: Path) -> list[Candidate]:
     """Manual Review first, then other manual-review notes, then inbox."""
     resources_dir = Path(resources_dir)
@@ -252,9 +272,9 @@ def collect_candidates(resources_dir: Path) -> list[Candidate]:
             strict = parse_frontmatter_strict(content)
             # A YAML error is None, which looks like "no status" and would
             # hide a broken inbox card or re-queue a tossed holding-folder
-            # note. The lenient parse still sees the status line. Rewrites
-            # keep the strict dict so rebuild_card cannot drop every key.
-            queue_fm = parse_frontmatter(content) if strict is None else strict
+            # note. Queue decisions use a lenient read of status and stage.
+            # Rewrites keep the strict dict so rebuild_card cannot drop every key.
+            queue_fm = _queue_frontmatter(content, strict)
             if not _is_queued(path, queue_fm, resources_dir):
                 continue
             if strict is None:
@@ -299,7 +319,8 @@ def _relative(path: Path, root: Path) -> str:
 
 def _render_card(index: int, total: int, candidate: Candidate, vault_path: Path) -> str:
     _, body = split_frontmatter(candidate.content)
-    fm = candidate.fm or {}
+    # Display can use the lenient read. Rewrites still require candidate.fm.
+    fm = candidate.fm if candidate.fm is not None else _queue_frontmatter(candidate.content, None)
     tags = fm.get("tags")
     if isinstance(tags, list):
         tag_text = ", ".join(str(tag) for tag in tags) or "(none)"

@@ -324,6 +324,43 @@ def test_broken_yaml_outside_manual_review_is_queued_but_not_rewritten(settings)
     assert path.read_text(encoding="utf-8") == original
 
 
+def test_broken_yaml_stage_still_orders_manual_review(settings):
+    resources = settings.resources_dir
+    inbox = resources / "Comedy" / "Plain broken.md"
+    staged = resources / "Art & Spaces" / "Staged broken.md"
+    stage_only = resources / "Tips" / "Stage only.md"
+    for path in (inbox, staged, stage_only):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text(
+        '---\nurl: "https://example.com/plain"\nstatus: "inbox"\ncategory: [oops\n---\n\n# Plain\n',
+        encoding="utf-8",
+    )
+    staged.write_text(
+        '---\nurl: "https://example.com/staged"\nstatus: "inbox"\nstage: "manual-review"\ncategory: [oops\n---\n\n# Staged\n',
+        encoding="utf-8",
+    )
+    stage_only.write_text(
+        '---\nurl: "https://example.com/only"\nstage: "manual-review"\ncategory: [oops\n---\n\n# Only\n',
+        encoding="utf-8",
+    )
+    tossed = resources / "Inbox" / "Manual Review" / "Tossed staged.md"
+    tossed.parent.mkdir(parents=True, exist_ok=True)
+    tossed.write_text(
+        '---\nurl: "https://example.com/tossed"\nstatus: "tossed"\nstage: "manual-review"\ncategory: [oops\n---\n\n# Tossed\n',
+        encoding="utf-8",
+    )
+    promoted = resources / "Inbox" / "Manual Review" / "Promoted.md"
+    promoted.write_text(
+        '---\nurl: "https://example.com/promoted"\nstatus: "promoted"\ncategory: [oops\n---\n\n# Promoted\n',
+        encoding="utf-8",
+    )
+
+    queued = [item.path for item in collect_candidates(resources)]
+    assert queued == [staged, stage_only, inbox]
+    assert all(item.fm is None for item in collect_candidates(resources))
+    assert tossed not in queued and promoted not in queued
+
+
 def test_broken_yaml_with_a_terminal_status_stays_out_of_the_queue(settings):
     resources = settings.resources_dir
     holding = resources / "Inbox" / "Manual Review" / "Done.md"
