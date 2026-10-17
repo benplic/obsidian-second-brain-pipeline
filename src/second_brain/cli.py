@@ -145,7 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ledger-sync", help="Record vault URLs and tossed cards in the URL ledger").set_defaults(func=cmd_ledger_sync)
     p_travel = sub.add_parser(
         "migrate-travel",
-        help="Backfill Travel Map View frontmatter on existing cards; ensure Travel Hub/Map notes",
+        help="Backfill Travel Map View frontmatter; ensure Hub/Map notes; replace CARTO tiles with OpenStreetMap",
     )
     p_travel.add_argument(
         "--apply",

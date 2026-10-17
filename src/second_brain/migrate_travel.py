@@ -4,20 +4,22 @@ Legacy Travel notes often lack Map View fields (``location``, ``weight``,
 ``mapMarkerColor``), ``summary``, and ``status``. This module backfills those
 keys without clobbering values a human (or later enrichment) already set, and
 ensures ``Travel Hub.md`` / ``Travel Map.md`` exist under
-``3 - Resources/Travel/``.
+``3 - Resources/Travel/``. When the Map View plugin settings are present, CARTO
+raster sources (which now require an API key) are replaced with OpenStreetMap.
 
 Default mode is dry-run. Pass ``apply=True`` (CLI ``--apply``) to write.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Settings
-from .io_utils import atomic_write_text
+from .io_utils import atomic_write_json, atomic_write_text
 from .steps.write_cards import TRAVEL_CATEGORY, map_marker_color_for_weight
 # format_frontmatter / rebuild_card live in vault.py (shared with the crusher);
 # re-exported here so existing imports keep working.
@@ -77,11 +79,25 @@ When planning a specific trip:
 3. Set card status to `status: "promoted"`.
 """
 
+# Standard OpenStreetMap Carto raster tiles. No account or API key.
+# Map View is Leaflet, so it cannot use vector styles such as OpenFreeMap.
+OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+# CARTO's raster CDN started returning "API key required" tiles on 25 Sep 2026.
+_CARTO_TILE_HOST = "basemaps.cartocdn.com"
+_MAP_VIEW_SETTINGS = Path(".obsidian") / "plugins" / "obsidian-map-view" / "data.json"
+# Native max zoom of the OSM standard layer. Matches the plugin default.
+_OSM_MAX_ZOOM = 19
+
 TRAVEL_MAP_TEMPLATE = """# Travel Map
 
 Embedded [Map View](https://github.com/esm7/obsidian-map-view) of notes under
 `3 - Resources/Travel`. Pins appear once a card's `location` is set to
 `[lat, lng]` (or `"lat,lng"`). Marker color follows `mapMarkerColor` / weight.
+
+The basemap is OpenStreetMap (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`).
+Map View only draws a corner credit for its old CARTO URL, so the credit is here:
+
+© [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)
 
 Requires the **Map View** community plugin. Until enrichment geocodes places,
 the map may be empty even though cards carry the schema.
@@ -102,6 +118,7 @@ class MigrateTravelResult:
     failed: int = 0
     hub_created: bool = False
     map_created: bool = False
+    map_tiles_updated: bool = False
     dry_run: bool = True
     updated_paths: list[str] = field(default_factory=list)
     failed_paths: list[str] = field(default_factory=list)
@@ -195,6 +212,88 @@ def migrate_card_content(content: str) -> tuple[str | None, list[str]]:
     return rebuild_card(content, merged), changed
 
 
+def openstreetmap_source() -> dict:
+    """Map View tile source for the public OpenStreetMap standard layer."""
+    return {
+        "name": "OpenStreetMap",
+        "urlLight": OSM_TILE_URL,
+        "maxZoom": _OSM_MAX_ZOOM,
+        "preset": False,
+    }
+
+
+def map_view_settings_path(vault_path: Path) -> Path:
+    return vault_path / _MAP_VIEW_SETTINGS
+
+
+def _source_uses_carto(source: object) -> bool:
+    if not isinstance(source, dict):
+        return False
+    return any(isinstance(value, str) and _CARTO_TILE_HOST in value for value in source.values())
+
+
+def retile_map_view_sources(data: dict) -> tuple[dict, int]:
+    """Replace CARTO raster sources with OpenStreetMap. Other sources stay put.
+
+    Returns the settings object (a shallow copy when anything changed) and how
+    many sources were replaced. A count of 0 means ``data`` is unchanged.
+    """
+    sources = data.get("mapSources")
+    if not isinstance(sources, list):
+        return data, 0
+    replaced = 0
+    new_sources: list = []
+    for source in sources:
+        if _source_uses_carto(source):
+            new_sources.append(openstreetmap_source())
+            replaced += 1
+        else:
+            new_sources.append(source)
+    if replaced == 0:
+        return data, 0
+    updated = dict(data)
+    updated["mapSources"] = new_sources
+    return updated, replaced
+
+
+def ensure_open_map_tiles(vault_path: Path, *, apply: bool) -> bool:
+    """Point Map View off CARTO tiles when its settings file exists.
+
+    Returns True when a CARTO source is present (and, if ``apply``, was written).
+    A missing plugin file is normal for a vault that does not use Map View.
+    Corrupt JSON is logged and skipped so card migration can still finish.
+    """
+    path = map_view_settings_path(vault_path)
+    if not path.is_file():
+        logger.debug("Map View settings not found at %s; leaving tiles unchanged", path)
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.warning("Could not read Map View settings %s: %s", path, exc)
+        return False
+    if not isinstance(data, dict):
+        logger.warning("Map View settings %s is not a JSON object; leaving tiles unchanged", path)
+        return False
+
+    updated, replaced = retile_map_view_sources(data)
+    if replaced == 0:
+        return False
+    if not apply:
+        logger.info(
+            "[dry-run] Would replace %d CARTO map source(s) with OpenStreetMap tiles",
+            replaced,
+        )
+        return True
+    try:
+        atomic_write_json(path, updated)
+    except OSError as exc:
+        logger.error("Failed to write Map View settings %s: %s", path, exc)
+        raise
+    logger.info("Replaced %d CARTO map source(s) with OpenStreetMap tiles", replaced)
+    return True
+
+
 def ensure_scaffold(travel_path: Path, *, apply: bool, force_templates: bool) -> tuple[bool, bool]:
     """Create Travel Hub / Travel Map when missing (or when force_templates)."""
     hub_path = travel_path / HUB_FILENAME
@@ -235,6 +334,8 @@ def run_migrate_travel(
     hub_needed, map_needed = ensure_scaffold(travel_path, apply=apply, force_templates=force_templates)
     result.hub_created = hub_needed and apply
     result.map_created = map_needed and apply
+    tiles_needed = ensure_open_map_tiles(settings.vault_path, apply=apply)
+    result.map_tiles_updated = tiles_needed and apply
 
     if not travel_path.is_dir():
         logger.warning("Travel folder not found: %s", travel_path)
@@ -281,7 +382,7 @@ def run_migrate_travel(
 
     mode = "Applied" if apply else "Dry-run"
     logger.info(
-        "%s travel migration: scanned=%d updated=%d already_ok=%d failed=%d hub=%s map=%s",
+        "%s travel migration: scanned=%d updated=%d already_ok=%d failed=%d hub=%s map=%s tiles=%s",
         mode,
         result.scanned,
         result.updated,
@@ -289,7 +390,8 @@ def run_migrate_travel(
         result.failed,
         "created" if result.hub_created else ("needed" if hub_needed else "ok"),
         "created" if result.map_created else ("needed" if map_needed else "ok"),
+        "updated" if result.map_tiles_updated else ("needed" if tiles_needed else "ok"),
     )
-    if not apply and (result.updated or hub_needed or map_needed):
+    if not apply and (result.updated or hub_needed or map_needed or tiles_needed):
         logger.info("Re-run with --apply to write changes.")
     return result
