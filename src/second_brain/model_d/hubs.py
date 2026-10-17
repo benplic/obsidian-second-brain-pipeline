@@ -1,8 +1,9 @@
 """Universal category hubs for folders that do not have a specialized model.
 
 A hub is created only when ``<Folder> Hub.md`` is missing. ``--repair``
-replaces a file only when its text still equals the previous stock template.
-Hand-edited synthesis notes are left alone.
+replaces a file only when its text still equals a body from
+``previous_stock_bodies`` (the previous Model D template, or the Model C
+generic hub). Hand-edited synthesis notes are left alone.
 """
 
 from __future__ import annotations
@@ -139,8 +140,8 @@ def render_universal_hub(folder: str, resources_subdir: str = "3 - Resources") -
 def render_previous_universal_hub(folder: str, resources_subdir: str = "3 - Resources") -> str:
     """Stock hub shipped before the manual-review callout and stage filter.
 
-    ``--repair`` replaces a file only when it still matches this text, or the
-    Model C generic hub that ``ensure_hubs`` writes for the same folder.
+    This is one of the texts ``previous_stock_bodies`` returns. ``--repair``
+    also replaces the live Model C ``generic_hub`` body for the same folder.
     """
     source = dataview_source(resources_subdir, folder)
     return _hub_body(
